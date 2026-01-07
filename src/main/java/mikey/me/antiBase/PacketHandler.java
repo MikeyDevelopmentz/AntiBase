@@ -1,134 +1,87 @@
 package mikey.me.antiBase;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.events.PacketAdapter;
-import com.comphenix.protocol.events.PacketContainer;
-import com.comphenix.protocol.events.PacketEvent;
-import com.comphenix.protocol.wrappers.BlockPosition;
-import com.comphenix.protocol.wrappers.WrappedBlockData;
-import org.bukkit.Bukkit;
-import org.bukkit.Chunk;
-import org.bukkit.Material;
-import org.bukkit.World;
-import org.bukkit.entity.Player;
+import com.github.retrooper.packetevents.event.PacketListenerPriority;
+import com.github.retrooper.packetevents.event.PacketSendEvent;
+import com.github.retrooper.packetevents.event.PacketListenerAbstract;
+import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
+import com.github.retrooper.packetevents.wrapper.play.server.*;
+import com.github.retrooper.packetevents.protocol.world.chunk.Column;
+import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.entity.Player;
+import org.bukkit.Material;
+import java.util.UUID;
+import io.github.retrooper.packetevents.util.SpigotConversionUtil;
 
-public class PacketHandler extends PacketAdapter {
+public class PacketHandler extends PacketListenerAbstract {
     private final BaseObfuscator obfuscator;
     private final Plugin plugin;
 
     public PacketHandler(Plugin plugin, BaseObfuscator obfuscator) {
-        super(plugin, PacketType.Play.Server.BLOCK_CHANGE, PacketType.Play.Server.MULTI_BLOCK_CHANGE,
-                PacketType.Play.Server.MAP_CHUNK, PacketType.Play.Server.SPAWN_ENTITY,
-                PacketType.Play.Server.NAMED_ENTITY_SPAWN);
+        super(PacketListenerPriority.HIGH);
         this.plugin = plugin;
         this.obfuscator = obfuscator;
     }
 
     @Override
-    public void onPacketSending(PacketEvent event) {
-        Player player = event.getPlayer();
-        PacketType type = event.getPacketType();
+    public void onPacketSend(PacketSendEvent event) {
+        try {
+            Player player = (Player) event.getPlayer();
+            if (player == null) return;
+            UUID playerId = player.getUniqueId();
+            PacketTypeCommon type = event.getPacketType();
 
-        if (type == PacketType.Play.Server.BLOCK_CHANGE) {
-            handleBlockChange(event, player);
-        } else if (type == PacketType.Play.Server.MULTI_BLOCK_CHANGE) {
-            handleMultiBlockChange(event, player);
-        } else if (type == PacketType.Play.Server.MAP_CHUNK) {
-            handleMapChunk(event, player);
-        } else if (type == PacketType.Play.Server.SPAWN_ENTITY || type == PacketType.Play.Server.NAMED_ENTITY_SPAWN) {
-            handleSpawnEntity(event, player);
-        }
-    }
-
-    private void handleBlockChange(PacketEvent event, Player player) {
-        PacketContainer packet = event.getPacket();
-        BlockPosition pos = packet.getBlockPositionModifier().read(0);
-        WrappedBlockData blockData = packet.getBlockData().read(0);
-        Material type = blockData.getType();
-
-        if (obfuscator.shouldObfuscate(type, pos.getX(), pos.getY(), pos.getZ(), player)) {
-            packet.getBlockData().write(0, WrappedBlockData.createData(obfuscator.getReplacementBlock()));
-        }
-    }
-
-    private void handleMultiBlockChange(PacketEvent event, Player player) {
-    }
-
-    private void handleMapChunk(PacketEvent event, Player player) {
-        PacketContainer packet = event.getPacket();
-        int cx = packet.getIntegers().read(0);
-        int cz = packet.getIntegers().read(1);
-
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (!player.isOnline())
-                return;
-            World world = player.getWorld();
-            if (!world.isChunkLoaded(cx, cz))
-                return;
-            Chunk chunk = world.getChunkAt(cx, cz);
-            long chunkKey = chunk.getChunkKey();
-
-            // calcuations
-            org.bukkit.Location playerLoc = player.getLocation();
-            int chunkCenterX = (cx << 4) + 8;
-            int chunkCenterZ = (cz << 4) + 8;
-            double distSq = Math.pow(playerLoc.getX() - chunkCenterX, 2) + Math.pow(playerLoc.getZ() - chunkCenterZ, 2);
-            boolean isFar = distSq > Math.pow(obfuscator.getProximityDistance(), 2);
-
-            if (isFar) {
-                // process right now if needed
-                obfuscator.setObscured(player.getUniqueId(), chunkKey, true);
-
-                org.bukkit.ChunkSnapshot snapshot = chunk.getChunkSnapshot(false, false, false);
-                java.util.concurrent.CompletableFuture.runAsync(() -> {
-                    if (!player.isOnline())
-                        return;
-                    java.util.Map<org.bukkit.Location, org.bukkit.block.data.BlockData> changes = new java.util.HashMap<>();
-                    int minY = world.getMinHeight();
-                    int maxY = obfuscator.getHideBelowY();
-
-                    for (int by = minY; by <= maxY; by++) {
-                        for (int bx = 0; bx < 16; bx++) {
-                            for (int bz = 0; bz < 16; bz++) {
-                                if (obfuscator.shouldObfuscate(snapshot.getBlockType(bx, by, bz), (cx << 4) + bx, by,
-                                        (cz << 4) + bz, player)) {
-                                    changes.put(new org.bukkit.Location(world, (cx << 4) + bx, by, (cz << 4) + bz),
-                                            obfuscator.getReplacementBlock().createBlockData());
+            if (type.getName().equals(PacketType.Play.Server.CHUNK_DATA.getName())) {
+                WrapperPlayServerChunkData chunkData = new WrapperPlayServerChunkData(event);
+                Column column = chunkData.getColumn();
+                if (column != null) {
+                    BaseChunk[] chunks = column.getChunks();
+                    if (chunks != null) {
+                        boolean modified = false;
+                        int hideBelow = obfuscator.getHideBelowY();
+                        for (int i = 0; i < chunks.length; i++) {
+                            BaseChunk section = chunks[i];
+                            if (section == null) continue;
+                            int sectionMaxY = (i - 4) * 16 + 16;
+                            if (sectionMaxY <= hideBelow) {
+                                if (plugin instanceof AntiBase && !((AntiBase) plugin).isSectionVisible(playerId, column.getX(), i - 4, column.getZ())) {
+                                    clearChunkSection(section);
+                                    modified = true;
                                 }
                             }
                         }
+                        if (modified) { chunkData.setColumn(column); chunkData.write(); }
                     }
-
-                    if (!changes.isEmpty()) {
-                        Bukkit.getScheduler().runTask(plugin, () -> {
-                            if (player.isOnline())
-                                player.sendMultiBlockChange(changes);
-                        });
-                    }
-                });
-            } else {
-
-                obfuscator.setObscured(player.getUniqueId(), chunkKey, false);
+                }
+                return;
             }
-        });
+
+            if (type.getName().equals(PacketType.Play.Server.BLOCK_CHANGE.getName())) {
+                WrapperPlayServerBlockChange blockChange = new WrapperPlayServerBlockChange(event);
+                handleSingleBlockUpdate(player, blockChange.getBlockPosition().getX(), blockChange.getBlockPosition().getY(), blockChange.getBlockPosition().getZ(), blockChange);
+            }
+        } catch (Exception e) { }
     }
 
-    private void handleSpawnEntity(PacketEvent event, Player player) {
-        PacketContainer packet = event.getPacket();
-
-        org.bukkit.entity.Entity entity = packet.getEntityModifier(player.getWorld()).read(0);
-
-        if (entity != null) {
-            if (obfuscator.shouldHideEntity(entity, player)) {
-                event.setCancelled(true);
-                org.bukkit.entity.Entity finalEntity = entity;
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (player.isOnline()) {
-                        player.hideEntity(plugin, finalEntity);
-                    }
-                });
+    private void handleSingleBlockUpdate(Player player, int bx, int by, int bz, WrapperPlayServerBlockChange packet) {
+        int hideBelow = obfuscator.getHideBelowY();
+        if (by <= hideBelow) {
+            int proximity = obfuscator.getProximityDistance();
+            double proximitySq = Math.pow(Math.max(proximity, 64.0), 2);
+            double distSq = Math.pow(player.getLocation().getX() - bx, 2) + Math.pow(player.getLocation().getY() - by, 2) + Math.pow(player.getLocation().getZ() - bz, 2);
+            if (distSq > proximitySq) {
+                Material replacement = obfuscator.getReplacementBlock();
+                packet.setBlockState(SpigotConversionUtil.fromBukkitBlockData(replacement.createBlockData()));
             }
         }
+    }
+
+    private void clearChunkSection(BaseChunk section) {
+        try {
+            Material replacement = obfuscator.getReplacementBlock();
+            int globalId = SpigotConversionUtil.fromBukkitBlockData(replacement.createBlockData()).getGlobalId();
+            for (int x = 0; x < 16; x++) { for (int z = 0; z < 16; z++) { for (int y = 0; y < 16; y++) { section.set(x, y, z, globalId); } } }
+        } catch (Exception e) { }
     }
 }

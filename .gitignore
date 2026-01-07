@@ -1,0 +1,39 @@
+# Compiled class file
+*.class
+
+# Log files
+*.log
+
+# Blueprints
+*.blueprints.json
+
+# Package Files #
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+hs_err_pid*
+
+# Build tools
+.gradle/
+build/
+bin/
+target/
+
+# IDEs
+.idea/
+*.iml
+*.iws
+.project
+.settings/
+.classpath
+.factorypath
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db

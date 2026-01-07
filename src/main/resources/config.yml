@@ -1,4 +1,4 @@
 enabled: true
-hide-below-y: 60
+hide-below-y: 0
 proximity-distance: 16
-replacement-block: STONE
+replacement-block: AIR
