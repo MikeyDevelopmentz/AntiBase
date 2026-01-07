@@ -23,6 +23,7 @@ hs_err_pid*
 build/
 bin/
 target/
+gradle.properties
 
 # IDEs
 .idea/
@@ -37,3 +38,9 @@ target/
 # System files
 .DS_Store
 Thumbs.db
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
