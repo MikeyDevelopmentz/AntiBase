@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.List;
 
 public final class AntiBase extends JavaPlugin {
     private final Map<UUID, Set<Long>> visibleSections = new ConcurrentHashMap<>();
@@ -19,7 +20,8 @@ public final class AntiBase extends JavaPlugin {
         int hideBelowY = getConfig().getInt("hide-below-y");
         int proximityDistance = getConfig().getInt("proximity-distance");
         String replacementBlock = getConfig().getString("replacement-block");
-        BaseObfuscator obfuscator = new BaseObfuscator(hideBelowY, proximityDistance, replacementBlock);
+        List<String> blacklistedWorlds = getConfig().getStringList("blacklisted-worlds");
+        BaseObfuscator obfuscator = new BaseObfuscator(hideBelowY, proximityDistance, replacementBlock, blacklistedWorlds);
         MovementListener movementListener = new MovementListener(this, obfuscator);
 
         try {
@@ -40,7 +42,7 @@ public final class AntiBase extends JavaPlugin {
             public void onJoin(org.bukkit.event.player.PlayerJoinEvent event) {
                 Bukkit.getScheduler().runTaskLater(AntiBase.this, () -> {
                     movementListener.updateVisibility(event.getPlayer());
-                    movementListener .updateOthersViewOfPlayer(event.getPlayer());
+                    movementListener.updateOthersViewOfPlayer(event.getPlayer());
                 }, 5L);
             }
         }, this);

@@ -29,6 +29,7 @@ public class PacketHandler extends PacketListenerAbstract {
         try {
             Player player = (Player) event.getPlayer();
             if (player == null) return;
+            if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
             UUID playerId = player.getUniqueId();
             PacketTypeCommon type = event.getPacketType();
 
@@ -51,7 +52,10 @@ public class PacketHandler extends PacketListenerAbstract {
                                 }
                             }
                         }
-                        if (modified) { chunkData.setColumn(column); chunkData.write(); }
+                        if (modified) {
+                            chunkData.setColumn(column);
+                            chunkData.write();
+                        }
                     }
                 }
                 return;
@@ -61,16 +65,21 @@ public class PacketHandler extends PacketListenerAbstract {
                 WrapperPlayServerBlockChange blockChange = new WrapperPlayServerBlockChange(event);
                 handleSingleBlockUpdate(player, blockChange.getBlockPosition().getX(), blockChange.getBlockPosition().getY(), blockChange.getBlockPosition().getZ(), blockChange);
             }
-        } catch (Exception e) { }
+        } catch (Exception e) {
+            plugin.getLogger().severe("Error in PacketHandler: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     private void handleSingleBlockUpdate(Player player, int bx, int by, int bz, WrapperPlayServerBlockChange packet) {
         int hideBelow = obfuscator.getHideBelowY();
         if (by <= hideBelow) {
             int proximity = obfuscator.getProximityDistance();
-            double proximitySq = Math.pow(Math.max(proximity, 64.0), 2);
-            double distSq = Math.pow(player.getLocation().getX() - bx, 2) + Math.pow(player.getLocation().getY() - by, 2) + Math.pow(player.getLocation().getZ() - bz, 2);
-            if (distSq > proximitySq) {
+            int dx = (int) (player.getLocation().getX() - bx);
+            int dy = (int) (player.getLocation().getY() - by);
+            int dz = (int) (player.getLocation().getZ() - bz);
+            int proximityLimit = Math.max(proximity, 64);
+            if (dx * dx + dy * dy + dz * dz > proximityLimit * proximityLimit) {
                 Material replacement = obfuscator.getReplacementBlock();
                 packet.setBlockState(SpigotConversionUtil.fromBukkitBlockData(replacement.createBlockData()));
             }
@@ -81,7 +90,15 @@ public class PacketHandler extends PacketListenerAbstract {
         try {
             Material replacement = obfuscator.getReplacementBlock();
             int globalId = SpigotConversionUtil.fromBukkitBlockData(replacement.createBlockData()).getGlobalId();
-            for (int x = 0; x < 16; x++) { for (int z = 0; z < 16; z++) { for (int y = 0; y < 16; y++) { section.set(x, y, z, globalId); } } }
-        } catch (Exception e) { }
+            for (int x = 0; x < 16; x++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int y = 0; y < 16; y++) {
+                        section.set(x, y, z, globalId);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().severe("Error clearing chunk section: " + e.getMessage());
+        }
     }
 }

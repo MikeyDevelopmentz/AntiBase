@@ -22,6 +22,7 @@ public class EntityListener implements Listener {
     }
 
     public void updateEntityVisibility(Entity entity) {
+        if (obfuscator.isWorldBlacklisted(entity.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
         int ex = entity.getLocation().getBlockX();
         int ey = entity.getLocation().getBlockY();
@@ -29,15 +30,21 @@ public class EntityListener implements Listener {
         
         for (Player p : entity.getWorld().getPlayers()) {
             if (p.equals(entity)) continue;
-            if (p.getLocation().distanceSquared(entity.getLocation()) > 25600) continue;
+            double dx = p.getLocation().getX() - entity.getLocation().getX();
+            double dy = p.getLocation().getY() - entity.getLocation().getY();
+            double dz = p.getLocation().getZ() - entity.getLocation().getZ();
+            if (dx * dx + dy * dy + dz * dz > 25600) continue;
             if (ey < hideBelow) {
                 if (!plugin.isBlockVisible(p.getUniqueId(), ex, ey, ez)) {
-                    p.hideEntity(plugin, entity);
+                    if (entity instanceof Player) p.hidePlayer(plugin, (Player) entity);
+                    else p.hideEntity(plugin, entity);
                 } else {
-                    p.showEntity(plugin, entity);
+                    if (entity instanceof Player) p.showPlayer(plugin, (Player) entity);
+                    else p.showEntity(plugin, entity);
                 }
             } else {
-                p.showEntity(plugin, entity);
+                if (entity instanceof Player) p.showPlayer(plugin, (Player) entity);
+                else p.showEntity(plugin, entity);
             }
         }
     }

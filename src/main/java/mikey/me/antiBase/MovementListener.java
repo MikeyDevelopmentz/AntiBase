@@ -32,17 +32,20 @@ public class MovementListener implements Listener {
         Location to = event.getTo();
         if (to == null) return;
         if (from.getBlockX() == to.getBlockX() && from.getBlockZ() == to.getBlockZ() && from.getBlockY() == to.getBlockY()) return;
-        long currentTick = event.getPlayer().getWorld().getFullTime();
-        long lastUpdate = lastUpdateTick.getOrDefault(event.getPlayer().getUniqueId(), 0L);
+        Player player = event.getPlayer();
+        if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
+        long currentTick = player.getWorld().getFullTime();
+        long lastUpdate = lastUpdateTick.getOrDefault(player.getUniqueId(), 0L);
         if (currentTick - lastUpdate < 2) return;
-        lastUpdateTick.put(event.getPlayer().getUniqueId(), currentTick);
-        updateVisibility(event.getPlayer());
-        updateOthersViewOfPlayer(event.getPlayer());
+        lastUpdateTick.put(player.getUniqueId(), currentTick);
+        updateVisibility(player);
+        updateOthersViewOfPlayer(player);
     }
 
     public void updateVisibility(Player player) {
         if (!(plugin instanceof AntiBase)) return;
         AntiBase antiBase = (AntiBase) plugin;
+        if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
         Location playerLoc = player.getLocation();
         org.bukkit.World world = player.getWorld();
@@ -64,8 +67,10 @@ public class MovementListener implements Listener {
         while (!queue.isEmpty() && blocksChecked < maxBlocks) {
             int[] pos = queue.poll();
             int x = pos[0], y = pos[1], z = pos[2];
-            double dSq = Math.pow(x - startX, 2) + Math.pow(y - startY, 2) + Math.pow(z - startZ, 2);
-            if (dSq > maxDistSq) continue;
+            int dx = x - startX;
+            int dy = y - startY;
+            int dz = z - startZ;
+            if (dx * dx + dy * dy + dz * dz > maxDistSq) continue;
             if (y < hideBelow) newVisibleSections.add(packSection(x >> 4, y >> 4, z >> 4));
             int[][] neighbors = {{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}};
             for (int[] n : neighbors) {
@@ -74,10 +79,13 @@ public class MovementListener implements Listener {
                 long key = AntiBase.packCoord(nx, ny, nz);
                 if (!visitedBlocks.contains(key)) {
                     visitedBlocks.add(key);
-                    long chunkKey = ((long)(nx >> 4) << 32) | ((nz >> 4) & 0xFFFFFFFFL);
-                    org.bukkit.Chunk chunk = chunkCache.computeIfAbsent(chunkKey, k -> world.getChunkAt(nx >> 4, nz >> 4));
+                    int cx = nx >> 4;
+                    int cz = nz >> 4;
+                    if (!world.isChunkLoaded(cx, cz)) continue;
+                    long chunkKey = ((long)cx << 32) | (cz & 0xFFFFFFFFL);
+                    org.bukkit.Chunk chunk = chunkCache.computeIfAbsent(chunkKey, k -> world.getChunkAt(cx, cz));
                     org.bukkit.block.Block block = chunk.getBlock(nx & 15, ny, nz & 15);
-                    if (ny < hideBelow) newVisibleSections.add(packSection(nx >> 4, ny >> 4, nz >> 4));
+                    if (ny < hideBelow) newVisibleSections.add(packSection(cx, ny >> 4, cz));
                     if (!block.getType().isOccluding() || block.getLightFromSky() == 15) queue.add(new int[]{nx, ny, nz});
                 }
             }
@@ -92,7 +100,12 @@ public class MovementListener implements Listener {
             if (!antiBase.isSectionVisible(player.getUniqueId(), coords[0], coords[1], coords[2])) {
                 antiBase.updateSectionVisibility(player.getUniqueId(), coords[0], coords[1], coords[2], true);
                 String chunkKey = coords[0] + "," + coords[2];
-                if (!refreshedChunks.contains(chunkKey)) { if (world.isChunkLoaded(coords[0], coords[2])) { world.refreshChunk(coords[0], coords[2]); refreshedChunks.add(chunkKey); } }
+                if (!refreshedChunks.contains(chunkKey)) {
+                    if (world.isChunkLoaded(coords[0], coords[2])) {
+                        world.refreshChunk(coords[0], coords[2]);
+                        refreshedChunks.add(chunkKey);
+                    }
+                }
             }
         }
         for (Long oldKey : oldVisibleSet) {
@@ -100,7 +113,12 @@ public class MovementListener implements Listener {
                 int[] coords = unpackSection(oldKey);
                 antiBase.updateSectionVisibility(player.getUniqueId(), coords[0], coords[1], coords[2], false);
                 String chunkKey = coords[0] + "," + coords[2];
-                if (!refreshedChunks.contains(chunkKey)) { if (world.isChunkLoaded(coords[0], coords[2])) { world.refreshChunk(coords[0], coords[2]); refreshedChunks.add(chunkKey); } }
+                if (!refreshedChunks.contains(chunkKey)) {
+                    if (world.isChunkLoaded(coords[0], coords[2])) {
+                        world.refreshChunk(coords[0], coords[2]);
+                        refreshedChunks.add(chunkKey);
+                    }
+                }
             }
         }
         playerVisibleSections.put(player.getUniqueId(), newVisibleSections);
@@ -110,6 +128,7 @@ public class MovementListener implements Listener {
     }
 
     private void updateEntitiesVisibility(Player player, Set<Long> visibleBlocks) {
+        if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
         for (Entity e : player.getNearbyEntities(160, 160, 160)) {
             if (e.equals(player)) continue;
@@ -118,12 +137,15 @@ public class MovementListener implements Listener {
             int ez = e.getLocation().getBlockZ();
             if (ey < hideBelow) {
                 if (!visibleBlocks.contains(AntiBase.packCoord(ex, ey, ez))) {
-                    player.hideEntity(plugin, e);
+                    if (e instanceof Player) player.hidePlayer(plugin, (Player) e);
+                    else player.hideEntity(plugin, e);
                 } else {
-                    player.showEntity(plugin, e);
+                    if (e instanceof Player) player.showPlayer(plugin, (Player) e);
+                    else player.showEntity(plugin, e);
                 }
             } else {
-                player.showEntity(plugin, e);
+                if (e instanceof Player) player.showPlayer(plugin, (Player) e);
+                else player.showEntity(plugin, e);
             }
         }
     }
@@ -131,6 +153,7 @@ public class MovementListener implements Listener {
     public void updateOthersViewOfPlayer(Player movingPlayer) {
         if (!(plugin instanceof AntiBase)) return;
         AntiBase antiBase = (AntiBase) plugin;
+        if (obfuscator.isWorldBlacklisted(movingPlayer.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
         int ex = movingPlayer.getLocation().getBlockX();
         int ey = movingPlayer.getLocation().getBlockY();
@@ -138,16 +161,19 @@ public class MovementListener implements Listener {
 
         for (Player other : movingPlayer.getWorld().getPlayers()) {
             if (other.equals(movingPlayer)) continue;
-            if (other.getLocation().distanceSquared(movingPlayer.getLocation()) > 25600) continue;
+            double dx = other.getLocation().getX() - movingPlayer.getLocation().getX();
+            double dy = other.getLocation().getY() - movingPlayer.getLocation().getY();
+            double dz = other.getLocation().getZ() - movingPlayer.getLocation().getZ();
+            if (dx * dx + dy * dy + dz * dz > 25600) continue;
 
             if (ey < hideBelow) {
                 if (!antiBase.isBlockVisible(other.getUniqueId(), ex, ey, ez)) {
-                    other.hideEntity(plugin, movingPlayer);
+                    other.hidePlayer(plugin, movingPlayer);
                 } else {
-                    other.showEntity(plugin, movingPlayer);
+                    other.showPlayer(plugin, movingPlayer);
                 }
             } else {
-                other.showEntity(plugin, movingPlayer);
+                other.showPlayer(plugin, movingPlayer);
             }
         }
     }
