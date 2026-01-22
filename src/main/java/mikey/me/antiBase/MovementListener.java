@@ -10,12 +10,11 @@ import org.bukkit.entity.Player;
 import java.util.UUID;
 import java.util.Set;
 import java.util.HashSet;
-import java.util.Queue;
-import java.util.LinkedList;
 import java.util.Map;
 import java.util.HashMap;
 
 public class MovementListener implements Listener {
+    private static final int[][] NEIGHBORS = {{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}};
     private final Plugin plugin;
     private final BaseObfuscator obfuscator;
     private final Map<UUID, Long> lastUpdateTick = new HashMap<>();
@@ -51,50 +50,75 @@ public class MovementListener implements Listener {
         org.bukkit.World world = player.getWorld();
         int minHeight = world.getMinHeight();
         int maxHeight = world.getMaxHeight();
+        int maxBlocks = 100000;
         Set<Long> newVisibleSections = new HashSet<>();
-        Set<Long> visitedBlocks = new HashSet<>();
-        Queue<int[]> queue = new LinkedList<>();
+        Set<Long> visitedBlocks = new HashSet<>(maxBlocks * 2);
+        Set<Long> visibleBlocks = new HashSet<>();
+        int queueCapacity = maxBlocks;
+        int[] queueX = new int[queueCapacity];
+        int[] queueY = new int[queueCapacity];
+        int[] queueZ = new int[queueCapacity];
+        int head = 0;
+        int tail = 0;
+        int size = 0;
         int startX = playerLoc.getBlockX();
         int startY = Math.max(minHeight, Math.min(maxHeight - 1, playerLoc.getBlockY()));
         int startZ = playerLoc.getBlockZ();
-        queue.add(new int[]{startX, startY, startZ});
+        queueX[tail] = startX;
+        queueY[tail] = startY;
+        queueZ[tail] = startZ;
+        tail = (tail + 1) % queueCapacity;
+        size++;
         visitedBlocks.add(AntiBase.packCoord(startX, startY, startZ));
         int maxDistance = 160;
         int maxDistSq = maxDistance * maxDistance;
         int blocksChecked = 0;
-        int maxBlocks = 100000;
         Map<Long, org.bukkit.Chunk> chunkCache = new HashMap<>();
-        while (!queue.isEmpty() && blocksChecked < maxBlocks) {
-            int[] pos = queue.poll();
-            int x = pos[0], y = pos[1], z = pos[2];
+        while (size > 0 && blocksChecked < maxBlocks) {
+            int x = queueX[head];
+            int y = queueY[head];
+            int z = queueZ[head];
+            head = (head + 1) % queueCapacity;
+            size--;
             int dx = x - startX;
             int dy = y - startY;
             int dz = z - startZ;
             if (dx * dx + dy * dy + dz * dz > maxDistSq) continue;
-            if (y < hideBelow) newVisibleSections.add(packSection(x >> 4, y >> 4, z >> 4));
-            int[][] neighbors = {{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}};
-            for (int[] n : neighbors) {
+            if (y < hideBelow) {
+                newVisibleSections.add(packSection(x >> 4, y >> 4, z >> 4));
+                visibleBlocks.add(AntiBase.packCoord(x, y, z));
+            }
+            for (int[] n : NEIGHBORS) {
                 int nx = x + n[0], ny = y + n[1], nz = z + n[2];
                 if (ny < minHeight || ny >= maxHeight) continue;
                 long key = AntiBase.packCoord(nx, ny, nz);
-                if (!visitedBlocks.contains(key)) {
-                    visitedBlocks.add(key);
+                if (visitedBlocks.add(key)) {
                     int cx = nx >> 4;
                     int cz = nz >> 4;
                     if (!world.isChunkLoaded(cx, cz)) continue;
                     long chunkKey = ((long)cx << 32) | (cz & 0xFFFFFFFFL);
                     org.bukkit.Chunk chunk = chunkCache.computeIfAbsent(chunkKey, k -> world.getChunkAt(cx, cz));
                     org.bukkit.block.Block block = chunk.getBlock(nx & 15, ny, nz & 15);
-                    if (ny < hideBelow) newVisibleSections.add(packSection(cx, ny >> 4, cz));
-                    if (!block.getType().isOccluding() || block.getLightFromSky() == 15) queue.add(new int[]{nx, ny, nz});
+                    if (ny < hideBelow) {
+                        newVisibleSections.add(packSection(cx, ny >> 4, cz));
+                    }
+                    if (!block.getType().isOccluding() || block.getLightFromSky() == 15) {
+                        if (size < queueCapacity) {
+                            queueX[tail] = nx;
+                            queueY[tail] = ny;
+                            queueZ[tail] = nz;
+                            tail = (tail + 1) % queueCapacity;
+                            size++;
+                        }
+                    }
                 }
             }
             blocksChecked++;
         }
-        antiBase.setVisibleBlocks(player.getUniqueId(), visitedBlocks);
-        updateEntitiesVisibility(player, visitedBlocks);
+        antiBase.setVisibleBlocks(player.getUniqueId(), visibleBlocks);
+        updateEntitiesVisibility(player, visibleBlocks);
         Set<String> refreshedChunks = new HashSet<>();
-        Set<Long> oldVisibleSet = playerVisibleSections.getOrDefault(player.getUniqueId(), new HashSet<>());
+        Set<Long> oldVisibleSet = playerVisibleSections.getOrDefault(player.getUniqueId(), java.util.Collections.emptySet());
         for (Long sectionKey : newVisibleSections) {
             int[] coords = unpackSection(sectionKey);
             if (!antiBase.isSectionVisible(player.getUniqueId(), coords[0], coords[1], coords[2])) {
