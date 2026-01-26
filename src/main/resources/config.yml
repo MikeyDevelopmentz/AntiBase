@@ -1,0 +1,7 @@
+enabled: true
+hide-below-y: 0
+proximity-distance: 16
+replacement-block: AIR
+blacklisted-worlds:
+  - world_nether
+  - world_the_end

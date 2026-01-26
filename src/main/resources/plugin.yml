@@ -1,0 +1,12 @@
+name: AntiBase
+version: '1.0-SNAPSHOT'
+main: mikey.me.antiBase.AntiBase
+api-version: '1.21'
+depend: [packetevents]
+commands:
+  antibase:
+    description: AntiBase debug commands
+    usage: /antibase debug
+    permission: antibase.debug
+    permission-message: You don't have permission to use this command
+
