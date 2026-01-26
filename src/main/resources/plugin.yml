@@ -3,4 +3,4 @@ version: '1.0-SNAPSHOT'
 main: mikey.me.antiBase.AntiBase
 api-version: '1.21'
 depend: [packetevents]
-
+folia-supported: true

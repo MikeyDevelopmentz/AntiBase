@@ -1,6 +1,7 @@
 package mikey.me.antiBase;
 
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -20,9 +21,10 @@ public class PlayerConnectionListener implements Listener {
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        Player player = event.getPlayer();
+        player.getScheduler().runDelayed(plugin, (task) -> {
             plugin.getMovementListener().updateVisibility(event.getPlayer());
             plugin.getMovementListener().updateOthersViewOfPlayer(event.getPlayer());
-        }, 5L);
+        }, null, 5L);
     }
 }

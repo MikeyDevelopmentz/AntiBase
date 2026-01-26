@@ -7,6 +7,8 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.event.player.PlayerTeleportEvent;
+
 import java.util.UUID;
 import java.util.Set;
 import java.util.HashSet;
@@ -26,13 +28,8 @@ public class MovementListener implements Listener {
         this.obfuscator = obfuscator;
     }
 
-    @EventHandler
-    public void onMove(PlayerMoveEvent event) {
-        Location from = event.getFrom();
-        Location to = event.getTo();
-        if (to == null) return;
+    private void update(Location to, Location from, Player player) {
         if (from.getBlockX() == to.getBlockX() && from.getBlockZ() == to.getBlockZ() && from.getBlockY() == to.getBlockY()) return;
-        Player player = event.getPlayer();
         if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         long currentTick = player.getWorld().getFullTime();
         long lastUpdate = lastUpdateTick.getOrDefault(player.getUniqueId(), 0L);
@@ -40,6 +37,16 @@ public class MovementListener implements Listener {
         lastUpdateTick.put(player.getUniqueId(), currentTick);
         updateVisibility(player);
         updateOthersViewOfPlayer(player);
+    }
+
+    @EventHandler
+    public void onMove(PlayerMoveEvent event) {
+        update(event.getTo(), event.getFrom(), event.getPlayer());
+    }
+
+    @EventHandler
+    public void onTeleport(PlayerTeleportEvent event) {
+        update(event.getTo(), event.getFrom(), event.getPlayer());
     }
 
     public void updateVisibility(Player player) {
