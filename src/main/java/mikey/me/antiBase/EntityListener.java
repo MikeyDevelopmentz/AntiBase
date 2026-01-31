@@ -22,6 +22,7 @@ public class EntityListener implements Listener {
     }
 
     public void updateEntityVisibility(Entity entity) {
+        if (!plugin.isObfuscationEnabled()) return;
         if (obfuscator.isWorldBlacklisted(entity.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
         int ex = entity.getLocation().getBlockX();

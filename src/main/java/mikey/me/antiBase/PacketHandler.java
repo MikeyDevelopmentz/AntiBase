@@ -28,6 +28,7 @@ public class PacketHandler extends PacketListenerAbstract {
     @Override
     public void onPacketSend(PacketSendEvent event) {
         try {
+            if (!plugin.isObfuscationEnabled()) return;
             Player player = event.getPlayer();
             if (player == null) return;
             if (obfuscator.isWorldBlacklisted(player.getWorld())) return;

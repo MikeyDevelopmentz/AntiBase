@@ -16,6 +16,7 @@ public class MiningListener implements Listener {
 
     @EventHandler
     public void onBreak(BlockBreakEvent event) {
+        if (!plugin.isObfuscationEnabled()) return;
         if (obfuscator.isWorldBlacklisted(event.getBlock().getWorld())) return;
         Block block = event.getBlock();
         int y = block.getY();

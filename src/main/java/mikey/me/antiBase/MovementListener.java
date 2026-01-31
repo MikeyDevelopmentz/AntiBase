@@ -29,6 +29,7 @@ public class MovementListener implements Listener {
     }
 
     private void update(Location to, Location from, Player player) {
+        if (!plugin.isObfuscationEnabled()) return;
         if (from.getBlockX() == to.getBlockX() && from.getBlockZ() == to.getBlockZ() && from.getBlockY() == to.getBlockY()) return;
         if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         long currentTick = player.getWorld().getFullTime();

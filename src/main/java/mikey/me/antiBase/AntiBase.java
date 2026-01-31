@@ -15,10 +15,12 @@ public final class AntiBase extends JavaPlugin {
     private final Map<UUID, Set<UUID>> hiddenPlayers = new ConcurrentHashMap<>();
     private final Set<UUID> debugPlayers = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private MovementListener movementListener;
+    private volatile boolean enabled;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        this.enabled = getConfig().getBoolean("enabled", true);
         int hideBelowY = getConfig().getInt("hide-below-y");
         int proximityDistance = getConfig().getInt("proximity-distance");
         String replacementBlock = getConfig().getString("replacement-block");
@@ -37,7 +39,7 @@ public final class AntiBase extends JavaPlugin {
         getServer().getPluginManager().registerEvents(movementListener, this);
         getServer().getPluginManager().registerEvents(new MiningListener(this, obfuscator), this);
         getServer().getPluginManager().registerEvents(new EntityListener(this, obfuscator), this);
-        getServer().getCommandMap().register("antibase", new DebugCommand(this));
+        getServer().getCommandMap().register("antibase", new AntibaseCommand(this));
     }
 
     public boolean isSectionVisible(UUID playerId, int chunkX, int sectionY, int chunkZ) {
@@ -106,6 +108,16 @@ public final class AntiBase extends JavaPlugin {
         } else {
             debugPlayers.remove(playerId);
         }
+    }
+
+    public boolean isObfuscationEnabled() {
+        return enabled;
+    }
+
+    public void setObfuscationEnabled(boolean enabled) {
+        this.enabled = enabled;
+        getConfig().set("enabled", enabled);
+        saveConfig();
     }
 
     public MovementListener getMovementListener() {
