@@ -1,5 +1,7 @@
 package mikey.me.antiBase;
 
+import java.util.Arrays;
+
 public class LongHashSet {
     private static final long EMPTY = Long.MIN_VALUE;
     private long[] table;
@@ -12,7 +14,7 @@ public class LongHashSet {
         table = new long[capacity];
         mask = capacity - 1;
         resizeThreshold = capacity * 3 / 4;
-        java.util.Arrays.fill(table, EMPTY);
+        Arrays.fill(table, EMPTY);
     }
 
     public boolean add(long value) {
