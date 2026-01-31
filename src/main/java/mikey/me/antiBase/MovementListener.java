@@ -1,6 +1,9 @@
 package mikey.me.antiBase;
 
+import org.bukkit.Chunk;
 import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
@@ -21,7 +24,26 @@ public class MovementListener implements Listener {
     private final AntiBase plugin;
     private final BaseObfuscator obfuscator;
     private final Map<UUID, Long> lastUpdateTick = new ConcurrentHashMap<>();
-    private final Map<UUID, Set<Long>> playerVisibleSections = new ConcurrentHashMap<>();
+    private final Map<UUID, LongHashSet> playerVisibleSections = new ConcurrentHashMap<>();
+    private final Map<UUID, BFSContext> bfsContexts = new ConcurrentHashMap<>();
+    private final Map<UUID, long[]> lastBFSPosition = new ConcurrentHashMap<>();
+
+    private static class BFSContext {
+        final int[] queueX = new int[100000];
+        final int[] queueY = new int[100000];
+        final int[] queueZ = new int[100000];
+        final LongHashSet visitedBlocks = new LongHashSet(200000);
+        final LongHashSet visibleBlocks = new LongHashSet(50000);
+        final LongHashSet newVisibleSections = new LongHashSet(4096);
+        final HashMap<Long, Chunk> chunkCache = new HashMap<>();
+
+        void clear() {
+            visitedBlocks.clear();
+            visibleBlocks.clear();
+            newVisibleSections.clear();
+            chunkCache.clear();
+        }
+    }
 
     public MovementListener(AntiBase plugin, BaseObfuscator obfuscator) {
         this.plugin = plugin;
@@ -29,12 +51,26 @@ public class MovementListener implements Listener {
     }
 
     private void update(Location to, Location from, Player player) {
+        if (!plugin.isObfuscationEnabled()) return;
         if (from.getBlockX() == to.getBlockX() && from.getBlockZ() == to.getBlockZ() && from.getBlockY() == to.getBlockY()) return;
         if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         long currentTick = player.getWorld().getFullTime();
         long lastUpdate = lastUpdateTick.getOrDefault(player.getUniqueId(), 0L);
-        if (currentTick - lastUpdate < 2) return;
+        if (currentTick - lastUpdate < 5) return;
         lastUpdateTick.put(player.getUniqueId(), currentTick);
+
+        int bx = to.getBlockX();
+        int by = to.getBlockY();
+        int bz = to.getBlockZ();
+        long[] lastPos = lastBFSPosition.get(player.getUniqueId());
+        if (lastPos != null) {
+            long dx = bx - lastPos[0];
+            long dy = by - lastPos[1];
+            long dz = bz - lastPos[2];
+            if (dx * dx + dy * dy + dz * dz < 4) return;
+        }
+        lastBFSPosition.put(player.getUniqueId(), new long[]{bx, by, bz});
+
         updateVisibility(player);
         updateOthersViewOfPlayer(player);
     }
@@ -53,67 +89,69 @@ public class MovementListener implements Listener {
         if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
         Location playerLoc = player.getLocation();
-        org.bukkit.World world = player.getWorld();
+
+        if (playerLoc.getBlockY() > hideBelow + 32) {
+            updateEntitiesVisibility(player, null);
+            return;
+        }
+
+        World world = player.getWorld();
         int minHeight = world.getMinHeight();
         int maxHeight = world.getMaxHeight();
-        int maxBlocks = 100000;
-        Set<Long> newVisibleSections = new HashSet<>();
-        Set<Long> visitedBlocks = new HashSet<>(maxBlocks * 2);
-        Set<Long> visibleBlocks = new HashSet<>();
-        int queueCapacity = maxBlocks;
-        int[] queueX = new int[queueCapacity];
-        int[] queueY = new int[queueCapacity];
-        int[] queueZ = new int[queueCapacity];
+
+        BFSContext ctx = bfsContexts.computeIfAbsent(player.getUniqueId(), k -> new BFSContext());
+        ctx.clear();
+
         int head = 0;
         int tail = 0;
         int size = 0;
         int startX = playerLoc.getBlockX();
         int startY = Math.max(minHeight, Math.min(maxHeight - 1, playerLoc.getBlockY()));
         int startZ = playerLoc.getBlockZ();
-        queueX[tail] = startX;
-        queueY[tail] = startY;
-        queueZ[tail] = startZ;
-        tail = (tail + 1) % queueCapacity;
+        ctx.queueX[tail] = startX;
+        ctx.queueY[tail] = startY;
+        ctx.queueZ[tail] = startZ;
+        tail = (tail + 1) % 100000;
         size++;
-        visitedBlocks.add(plugin.packCoord(startX, startY, startZ));
+        ctx.visitedBlocks.add(plugin.packCoord(startX, startY, startZ));
         int maxDistance = 160;
         int maxDistSq = maxDistance * maxDistance;
         int blocksChecked = 0;
-        Map<Long, org.bukkit.Chunk> chunkCache = new HashMap<>();
+        int maxBlocks = 100000;
         while (size > 0 && blocksChecked < maxBlocks) {
-            int x = queueX[head];
-            int y = queueY[head];
-            int z = queueZ[head];
-            head = (head + 1) % queueCapacity;
+            int x = ctx.queueX[head];
+            int y = ctx.queueY[head];
+            int z = ctx.queueZ[head];
+            head = (head + 1) % 100000;
             size--;
             int dx = x - startX;
             int dy = y - startY;
             int dz = z - startZ;
             if (dx * dx + dy * dy + dz * dz > maxDistSq) continue;
             if (y < hideBelow) {
-                newVisibleSections.add(plugin.packSection(x >> 4, y >> 4, z >> 4));
-                visibleBlocks.add(plugin.packCoord(x, y, z));
+                ctx.newVisibleSections.add(plugin.packSection(x >> 4, y >> 4, z >> 4));
+                ctx.visibleBlocks.add(plugin.packCoord(x, y, z));
             }
             for (int[] n : NEIGHBORS) {
                 int nx = x + n[0], ny = y + n[1], nz = z + n[2];
                 if (ny < minHeight || ny >= maxHeight) continue;
                 long key = plugin.packCoord(nx, ny, nz);
-                if (visitedBlocks.add(key)) {
+                if (ctx.visitedBlocks.add(key)) {
                     int cx = nx >> 4;
                     int cz = nz >> 4;
                     if (!world.isChunkLoaded(cx, cz)) continue;
                     long chunkKey = ((long)cx << 32) | (cz & 0xFFFFFFFFL);
-                    org.bukkit.Chunk chunk = chunkCache.computeIfAbsent(chunkKey, k -> world.getChunkAt(cx, cz));
-                    org.bukkit.block.Block block = chunk.getBlock(nx & 15, ny, nz & 15);
+                    Chunk chunk = ctx.chunkCache.computeIfAbsent(chunkKey, k -> world.getChunkAt(cx, cz));
+                    Block block = chunk.getBlock(nx & 15, ny, nz & 15);
                     if (ny < hideBelow) {
-                        newVisibleSections.add(plugin.packSection(cx, ny >> 4, cz));
+                        ctx.newVisibleSections.add(plugin.packSection(cx, ny >> 4, cz));
                     }
                     if (!block.getType().isOccluding() || block.getLightFromSky() == 15) {
-                        if (size < queueCapacity) {
-                            queueX[tail] = nx;
-                            queueY[tail] = ny;
-                            queueZ[tail] = nz;
-                            tail = (tail + 1) % queueCapacity;
+                        if (size < 100000) {
+                            ctx.queueX[tail] = nx;
+                            ctx.queueY[tail] = ny;
+                            ctx.queueZ[tail] = nz;
+                            tail = (tail + 1) % 100000;
                             size++;
                         }
                     }
@@ -121,54 +159,80 @@ public class MovementListener implements Listener {
             }
             blocksChecked++;
         }
-        plugin.setVisibleBlocks(player.getUniqueId(), visibleBlocks);
-        updateEntitiesVisibility(player, visibleBlocks);
+        plugin.setVisibleBlocks(player.getUniqueId(), ctx.visibleBlocks);
+        updateEntitiesVisibility(player, ctx.visibleBlocks);
         Set<String> refreshedChunks = new HashSet<>();
-        Set<Long> oldVisibleSet = playerVisibleSections.getOrDefault(player.getUniqueId(), java.util.Collections.emptySet());
-        for (Long sectionKey : newVisibleSections) {
+        LongHashSet oldVisibleSet = playerVisibleSections.get(player.getUniqueId());
+        ctx.newVisibleSections.forEach(sectionKey -> {
             int[] coords = plugin.unpackSection(sectionKey);
             if (!plugin.isSectionVisible(player.getUniqueId(), coords[0], coords[1], coords[2])) {
                 plugin.updateSectionVisibility(player.getUniqueId(), coords[0], coords[1], coords[2], true);
-                String chunkKey = coords[0] + "," + coords[2];
-                if (!refreshedChunks.contains(chunkKey)) {
+                String chunkKeyStr = coords[0] + "," + coords[2];
+                if (!refreshedChunks.contains(chunkKeyStr)) {
                     if (world.isChunkLoaded(coords[0], coords[2])) {
                         world.refreshChunk(coords[0], coords[2]);
-                        refreshedChunks.add(chunkKey);
+                        refreshedChunks.add(chunkKeyStr);
                     }
                 }
             }
-        }
-        for (Long oldKey : oldVisibleSet) {
-            if (!newVisibleSections.contains(oldKey)) {
-                int[] coords = plugin.unpackSection(oldKey);
-                plugin.updateSectionVisibility(player.getUniqueId(), coords[0], coords[1], coords[2], false);
-                String chunkKey = coords[0] + "," + coords[2];
-                if (!refreshedChunks.contains(chunkKey)) {
-                    if (world.isChunkLoaded(coords[0], coords[2])) {
-                        world.refreshChunk(coords[0], coords[2]);
-                        refreshedChunks.add(chunkKey);
+        });
+        if (oldVisibleSet != null) {
+            oldVisibleSet.forEach(oldKey -> {
+                if (!ctx.newVisibleSections.contains(oldKey)) {
+                    int[] coords = plugin.unpackSection(oldKey);
+                    plugin.updateSectionVisibility(player.getUniqueId(), coords[0], coords[1], coords[2], false);
+                    String chunkKeyStr = coords[0] + "," + coords[2];
+                    if (!refreshedChunks.contains(chunkKeyStr)) {
+                        if (world.isChunkLoaded(coords[0], coords[2])) {
+                            world.refreshChunk(coords[0], coords[2]);
+                            refreshedChunks.add(chunkKeyStr);
+                        }
                     }
                 }
-            }
+            });
         }
-        playerVisibleSections.put(player.getUniqueId(), newVisibleSections);
+        LongHashSet savedSections = new LongHashSet(ctx.newVisibleSections.size());
+        ctx.newVisibleSections.forEach(savedSections::add);
+        playerVisibleSections.put(player.getUniqueId(), savedSections);
         if (plugin.isDebugEnabled(player.getUniqueId()) && !refreshedChunks.isEmpty()) {
             player.sendActionBar(MiniMessage.miniMessage().deserialize(
-                "<gray>[<gold>AntiBase</gold>]</gray> <green>Visible:</green> <yellow>" + visitedBlocks.size() + "</yellow> <gray>|</gray> <green>Sections:</green> <yellow>" + newVisibleSections.size() + "</yellow>"
+                "<gray>[<gold>AntiBase</gold>]</gray> <green>Visible:</green> <yellow>" + ctx.visitedBlocks.size() + "</yellow> <gray>|</gray> <green>Sections:</green> <yellow>" + ctx.newVisibleSections.size() + "</yellow>"
             ));
         }
     }
 
-    private void updateEntitiesVisibility(Player player, Set<Long> visibleBlocks) {
+    private void updateEntitiesVisibility(Player player, LongHashSet visibleBlocks) {
         if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
         int hideBelow = obfuscator.getHideBelowY();
-        for (Entity e : player.getNearbyEntities(160, 160, 160)) {
-            if (e.equals(player)) continue;
-            int ex = e.getLocation().getBlockX();
+        Location pLoc = player.getLocation();
+        double px = pLoc.getX();
+        double py = pLoc.getY();
+        double pz = pLoc.getZ();
+
+        for (Player other : player.getWorld().getPlayers()) {
+            if (other.equals(player)) continue;
+            double dx = other.getLocation().getX() - px;
+            double dy = other.getLocation().getY() - py;
+            double dz = other.getLocation().getZ() - pz;
+            if (dx * dx + dy * dy + dz * dz > 25600) continue;
+            int ey = other.getLocation().getBlockY();
+            if (ey < hideBelow && visibleBlocks != null) {
+                boolean visible = visibleBlocks.contains(plugin.packCoord(
+                    other.getLocation().getBlockX(), ey, other.getLocation().getBlockZ()));
+                setPlayerVisibility(player, other, visible);
+            } else {
+                setPlayerVisibility(player, other, true);
+            }
+        }
+
+        for (Entity e : player.getNearbyEntities(48, 48, 48)) {
+            if (e instanceof Player) continue;
             int ey = e.getLocation().getBlockY();
-            int ez = e.getLocation().getBlockZ();
-            boolean shouldHide = ey < hideBelow && !visibleBlocks.contains(plugin.packCoord(ex, ey, ez));
-            setEntityVisibility(player, e, !shouldHide);
+            if (ey < hideBelow && visibleBlocks != null) {
+                boolean visible = visibleBlocks.contains(plugin.packCoord(
+                    e.getLocation().getBlockX(), ey, e.getLocation().getBlockZ()));
+                setEntityVisibility(player, e, visible);
+            }
         }
     }
 
@@ -179,6 +243,18 @@ public class MovementListener implements Listener {
         int ey = movingPlayer.getLocation().getBlockY();
         int ez = movingPlayer.getLocation().getBlockZ();
 
+        if (ey >= hideBelow) {
+            for (Player other : movingPlayer.getWorld().getPlayers()) {
+                if (other.equals(movingPlayer)) continue;
+                double dx = other.getLocation().getX() - movingPlayer.getLocation().getX();
+                double dy = other.getLocation().getY() - movingPlayer.getLocation().getY();
+                double dz = other.getLocation().getZ() - movingPlayer.getLocation().getZ();
+                if (dx * dx + dy * dy + dz * dz > 25600) continue;
+                setPlayerVisibility(other, movingPlayer, true);
+            }
+            return;
+        }
+
         for (Player other : movingPlayer.getWorld().getPlayers()) {
             if (other.equals(movingPlayer)) continue;
             double dx = other.getLocation().getX() - movingPlayer.getLocation().getX();
@@ -186,7 +262,7 @@ public class MovementListener implements Listener {
             double dz = other.getLocation().getZ() - movingPlayer.getLocation().getZ();
             if (dx * dx + dy * dy + dz * dz > 25600) continue;
 
-            boolean shouldHide = ey < hideBelow && !plugin.isBlockVisible(other.getUniqueId(), ex, ey, ez);
+            boolean shouldHide = !plugin.isBlockVisible(other.getUniqueId(), ex, ey, ez);
             setPlayerVisibility(other, movingPlayer, !shouldHide);
         }
     }
@@ -211,5 +287,12 @@ public class MovementListener implements Listener {
             viewer.hidePlayer(plugin, target);
             plugin.setHidden(viewer.getUniqueId(), target.getUniqueId(), true);
         }
+    }
+
+    public void cleanupPlayer(UUID uuid) {
+        bfsContexts.remove(uuid);
+        lastBFSPosition.remove(uuid);
+        lastUpdateTick.remove(uuid);
+        playerVisibleSections.remove(uuid);
     }
 }

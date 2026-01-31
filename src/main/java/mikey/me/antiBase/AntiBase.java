@@ -10,15 +10,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 
 public final class AntiBase extends JavaPlugin {
-    private final Map<UUID, Set<Long>> visibleSections = new ConcurrentHashMap<>();
-    private final Map<UUID, Set<Long>> visibleBlocks = new ConcurrentHashMap<>();
+    private final Map<UUID, LongHashSet> visibleSections = new ConcurrentHashMap<>();
+    private final Map<UUID, LongHashSet> visibleBlocks = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> hiddenPlayers = new ConcurrentHashMap<>();
     private final Set<UUID> debugPlayers = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private MovementListener movementListener;
+    private volatile boolean enabled;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        this.enabled = getConfig().getBoolean("enabled", true);
         int hideBelowY = getConfig().getInt("hide-below-y");
         int proximityDistance = getConfig().getInt("proximity-distance");
         String replacementBlock = getConfig().getString("replacement-block");
@@ -37,16 +39,16 @@ public final class AntiBase extends JavaPlugin {
         getServer().getPluginManager().registerEvents(movementListener, this);
         getServer().getPluginManager().registerEvents(new MiningListener(this, obfuscator), this);
         getServer().getPluginManager().registerEvents(new EntityListener(this, obfuscator), this);
-        getServer().getCommandMap().register("antibase", new DebugCommand(this));
+        getServer().getCommandMap().register("antibase", new AntibaseCommand(this));
     }
 
     public boolean isSectionVisible(UUID playerId, int chunkX, int sectionY, int chunkZ) {
-        Set<Long> visible = visibleSections.get(playerId);
+        LongHashSet visible = visibleSections.get(playerId);
         return visible != null && visible.contains(packSection(chunkX, sectionY, chunkZ));
     }
 
     public void updateSectionVisibility(UUID playerId, int chunkX, int sectionY, int chunkZ, boolean isVisible) {
-        Set<Long> visible = visibleSections.computeIfAbsent(playerId, k -> Collections.newSetFromMap(new ConcurrentHashMap<>()));
+        LongHashSet visible = visibleSections.computeIfAbsent(playerId, k -> new LongHashSet(512));
         long key = packSection(chunkX, sectionY, chunkZ);
         if (isVisible) {
             visible.add(key);
@@ -56,7 +58,7 @@ public final class AntiBase extends JavaPlugin {
     }
 
     public boolean isBlockVisible(UUID playerId, int x, int y, int z) {
-        Set<Long> blocks = visibleBlocks.get(playerId);
+        LongHashSet blocks = visibleBlocks.get(playerId);
         return blocks != null && blocks.contains(packCoord(x, y, z));
     }
 
@@ -74,7 +76,7 @@ public final class AntiBase extends JavaPlugin {
         return hiddenSet != null && hiddenSet.contains(targetId);
     }
 
-    public void setVisibleBlocks(UUID playerId, Set<Long> blocks) {
+    public void setVisibleBlocks(UUID playerId, LongHashSet blocks) {
         visibleBlocks.put(playerId, blocks);
     }
 
@@ -108,6 +110,16 @@ public final class AntiBase extends JavaPlugin {
         }
     }
 
+    public boolean isObfuscationEnabled() {
+        return enabled;
+    }
+
+    public void setObfuscationEnabled(boolean enabled) {
+        this.enabled = enabled;
+        getConfig().set("enabled", enabled);
+        saveConfig();
+    }
+
     public MovementListener getMovementListener() {
         return movementListener;
     }
@@ -119,5 +131,6 @@ public final class AntiBase extends JavaPlugin {
         for (Set<UUID> hidden : hiddenPlayers.values()) {
             hidden.remove(uuid);
         }
+        movementListener.cleanupPlayer(uuid);
     }
 }

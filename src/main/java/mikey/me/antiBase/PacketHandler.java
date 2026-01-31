@@ -9,11 +9,9 @@ import com.github.retrooper.packetevents.wrapper.play.server.*;
 import com.github.retrooper.packetevents.protocol.world.chunk.Column;
 import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
 import org.bukkit.entity.Player;
-import org.bukkit.Material;
 import java.util.UUID;
 import java.util.List;
 import java.util.ArrayList;
-import io.github.retrooper.packetevents.util.SpigotConversionUtil;
 
 public class PacketHandler extends PacketListenerAbstract {
     private final BaseObfuscator obfuscator;
@@ -28,6 +26,7 @@ public class PacketHandler extends PacketListenerAbstract {
     @Override
     public void onPacketSend(PacketSendEvent event) {
         try {
+            if (!plugin.isObfuscationEnabled()) return;
             Player player = event.getPlayer();
             if (player == null) return;
             if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
@@ -126,16 +125,14 @@ public class PacketHandler extends PacketListenerAbstract {
             int dz = (int) (player.getLocation().getZ() - bz);
             int proximityLimit = Math.max(proximity, 64);
             if (dx * dx + dy * dy + dz * dz > proximityLimit * proximityLimit) {
-                Material replacement = obfuscator.getReplacementBlock();
-                packet.setBlockState(SpigotConversionUtil.fromBukkitBlockData(replacement.createBlockData()));
+                packet.setBlockState(obfuscator.getReplacementBlockState());
             }
         }
     }
 
     private void clearChunkSection(BaseChunk section) {
         try {
-            Material replacement = obfuscator.getReplacementBlock();
-            int globalId = SpigotConversionUtil.fromBukkitBlockData(replacement.createBlockData()).getGlobalId();
+            int globalId = obfuscator.getReplacementBlockStateId();
             for (int x = 0; x < 16; x++) {
                 for (int z = 0; z < 16; z++) {
                     for (int y = 0; y < 16; y++) {
