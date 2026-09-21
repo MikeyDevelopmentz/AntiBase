@@ -1,6 +1,17 @@
 name: AntiBase
-version: '1.0-SNAPSHOT'
+version: '${version}'
 main: mikey.me.antiBase.AntiBase
-api-version: '1.21'
+api-version: '1.21.11'
 depend: [packetevents]
-folia-supported: true
+description: Hides underground bases and caves from x-ray and freecam.
+commands:
+  antibase:
+    description: AntiBase status and admin commands.
+    usage: /antibase <status|enable|disable> or /antibase debug [on [player]|off|status]
+permissions:
+  antibase.admin:
+    description: Manage obfuscation and console debugging.
+    default: op
+  antibase.debug:
+    description: Shows visibility stats in the action bar.
+    default: op

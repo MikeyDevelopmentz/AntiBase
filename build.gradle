@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'mikey.me'
-version = '1.0-SNAPSHOT'
+version = '1.7.0-SNAPSHOT'
 
 repositories {
     mavenCentral()
@@ -21,6 +21,13 @@ repositories {
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     compileOnly("com.github.retrooper:packetevents-spigot:2.11.1")
+    compileOnly("it.unimi.dsi:fastutil:8.5.15") // paper provides this, used for the scan caches
+    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    testImplementation("com.github.retrooper:packetevents-spigot:2.11.1")
+    testImplementation(platform("org.junit:junit-bom:5.11.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("org.mockito:mockito-core:5.15.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks {
@@ -28,7 +35,7 @@ tasks {
         // Configure the Minecraft version for our task.
         // This is the only required configuration besides applying the plugin.
         // Your plugin's jar (or shadowJar if present) will be used automatically.
-        minecraftVersion("1.21")
+        minecraftVersion("1.21.11")
     }
 }
 
@@ -37,9 +44,7 @@ java {
     def javaVersion = JavaVersion.toVersion(targetJavaVersion)
     sourceCompatibility = javaVersion
     targetCompatibility = javaVersion
-    if (JavaVersion.current() < javaVersion) {
-        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
-    }
+    toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -56,5 +61,75 @@ processResources {
     filteringCharset 'UTF-8'
     filesMatching('plugin.yml') {
         expand props
+    }
+}
+
+test {
+    useJUnitPlatform()
+}
+
+tasks.register('visibilityBenchmark', JavaExec) {
+    group = 'verification'
+    description = 'Synthetic visibility/delta benchmark, no live server involved.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'mikey.me.antiBase.VisibilityBenchmark'
+    maxHeapSize = '512m'
+}
+
+tasks.register('caveSimulation', JavaExec) {
+    group = 'verification'
+    description = 'Tests connected rendering on the full cave map.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'mikey.me.antiBase.CaveSimulation'
+    maxHeapSize = '512m'
+    systemProperty 'java.awt.headless', 'true'
+}
+
+tasks.register('caveBaseline', JavaExec) {
+    group = 'verification'
+    description = 'Runs the old line-of-sight method on the same cave map.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'mikey.me.antiBase.CaveSimulation'
+    args 'build/cave-baseline', 'line-of-sight', '0'
+    maxHeapSize = '512m'
+    systemProperty 'java.awt.headless', 'true'
+}
+
+tasks.register('paperChestVerification', JavaExec) {
+    group = 'verification'
+    description = 'Checks real Paper chest states, needs -PpaperRuntimeDir with a prepared paper runtime.'
+    dependsOn testClasses
+    mainClass = 'mikey.me.antiBase.PaperChestVerification'
+    maxHeapSize = '512m'
+    doFirst {
+        def runtimePath = providers.gradleProperty('paperRuntimeDir').orNull
+        if (runtimePath == null) throw new GradleException('Supply -PpaperRuntimeDir=<prepared paper runtime with paper.jar, versions/ and libraries/>')
+        def runtime = file(runtimePath)
+        def launcher = new File(runtime, 'paper.jar')
+        if (!launcher.isFile()) throw new GradleException("Missing ${launcher}")
+        def jars = []
+        new java.util.zip.ZipFile(launcher).withCloseable { zip ->
+            // paperclip order: server overrides first, then libraries
+            ['versions', 'libraries'].each { kind ->
+                def entry = zip.getEntry("META-INF/${kind}.list")
+                if (entry == null) throw new GradleException("Missing ${kind} list in ${launcher}")
+                zip.getInputStream(entry).withCloseable { input ->
+                    input.getText('UTF-8').readLines().findAll { !it.isBlank() }.each { line ->
+                        jars.add(new File(runtime, "${kind}/${line.split('\\t')[2]}"))
+                    }
+                }
+            }
+        }
+        def missing = jars.findAll { !it.isFile() }
+        if (!missing.isEmpty()) throw new GradleException("Unprepared Paper runtime: missing ${missing.first()}")
+        // use papers own libs here, not the api jars from the test classpath
+        classpath = files(sourceSets.test.output, sourceSets.main.output, jars)
+        def output = layout.buildDirectory.dir('paper-chest-verification').get().asFile
+        output.mkdirs()
+        workingDir = output
+        args = [new File(output, 'chest-shapes.tsv').absolutePath]
     }
 }

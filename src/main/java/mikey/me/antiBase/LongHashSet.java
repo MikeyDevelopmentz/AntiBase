@@ -2,119 +2,96 @@ package mikey.me.antiBase;
 
 import java.util.Arrays;
 
-public class LongHashSet {
-    private static final long EMPTY = Long.MIN_VALUE;
+/** long set that takes any long value, incl packed negative coords */
+public final class LongHashSet {
     private long[] table;
+    private boolean[] occupied;
     private int size;
     private int mask;
-    private int resizeThreshold;
 
     public LongHashSet(int expectedSize) {
-        int capacity = tableSizeFor(Math.max(16, expectedSize * 4 / 3));
+        if (expectedSize < 0 || expectedSize > (1 << 28)) {
+            throw new IllegalArgumentException("Invalid expected size: " + expectedSize);
+        }
+        int capacity = 16;
+        while (capacity * 3L / 4 < expectedSize) capacity <<= 1;
         table = new long[capacity];
+        occupied = new boolean[capacity];
         mask = capacity - 1;
-        resizeThreshold = capacity * 3 / 4;
-        Arrays.fill(table, EMPTY);
     }
 
     public synchronized boolean add(long value) {
-        if (value == EMPTY) value = Long.MIN_VALUE + 1; // EMPTY is sentinel
-        int idx = mix(value) & mask;
-        int firstTombstone = -1;
-        while (true) {
-            long existing = table[idx];
-            if (existing == EMPTY) {
-                table[firstTombstone != -1 ? firstTombstone : idx] = value;
-                if (++size >= resizeThreshold) grow();
-                return true;
-            }
-            if (existing == TOMBSTONE && firstTombstone == -1) {
-                firstTombstone = idx;
-            } else if (existing == value) {
-                return false;
-            }
-            idx = (idx + 1) & mask;
-        }
+        int index = find(value);
+        if (occupied[index]) return false;
+        table[index] = value;
+        occupied[index] = true;
+        if (++size >= table.length * 3L / 4) grow();
+        return true;
     }
 
     public synchronized boolean contains(long value) {
-        if (value == EMPTY) value = Long.MIN_VALUE + 1;
-        int idx = mix(value) & mask;
-        while (true) {
-            long existing = table[idx];
-            if (existing == EMPTY) return false;
-            if (existing == value) return true;
-            idx = (idx + 1) & mask;
-        }
+        return occupied[find(value)];
     }
 
-    private static final long TOMBSTONE = Long.MIN_VALUE + 2;
-
-    /** remove value, leave tombstone so probe chain stays valid */
     public synchronized boolean remove(long value) {
-        if (value == EMPTY) value = Long.MIN_VALUE + 1;
-        int idx = mix(value) & mask;
-        while (true) {
-            long existing = table[idx];
-            if (existing == EMPTY) return false;
-            if (existing == value) {
-                table[idx] = TOMBSTONE;
-                size--;
-                return true;
-            }
-            idx = (idx + 1) & mask;
+        int index = find(value);
+        if (!occupied[index]) return false;
+        occupied[index] = false;
+        size--;
+        // reinsert the cluster after it, no tombstones so probes cant grind to a halt
+        for (index = (index + 1) & mask; occupied[index]; index = (index + 1) & mask) {
+            long displaced = table[index];
+            occupied[index] = false;
+            int destination = find(displaced);
+            table[destination] = displaced;
+            occupied[destination] = true;
         }
+        return true;
     }
 
-    public synchronized int size() {
-        return size;
-    }
+    public synchronized int size() { return size; }
 
     public synchronized void clear() {
-        if (size > 0) {
-            Arrays.fill(table, EMPTY);
-            size = 0;
-        }
+        Arrays.fill(occupied, false);
+        size = 0;
     }
 
     public synchronized void forEach(LongConsumer consumer) {
-        for (long v : table) {
-            if (v != EMPTY && v != TOMBSTONE) consumer.accept(v);
+        for (int i = 0; i < table.length; i++) {
+            if (occupied[i]) consumer.accept(table[i]);
         }
     }
 
     @FunctionalInterface
-    public interface LongConsumer {
-        void accept(long value);
+    public interface LongConsumer { void accept(long value); }
+
+    private int find(long value) {
+        int index = mix(value) & mask;
+        while (occupied[index] && table[index] != value) index = (index + 1) & mask;
+        return index;
     }
 
-    /** double table size and rehash */
     private void grow() {
-        long[] old = table;
-        int newCapacity = old.length * 2;
-        table = new long[newCapacity];
-        mask = newCapacity - 1;
-        resizeThreshold = newCapacity * 3 / 4;
-        java.util.Arrays.fill(table, EMPTY);
-        size = 0;
-        for (long v : old) {
-            if (v != EMPTY && v != TOMBSTONE) add(v);
+        long[] oldTable = table;
+        boolean[] oldOccupied = occupied;
+        table = new long[oldTable.length << 1];
+        occupied = new boolean[table.length];
+        mask = table.length - 1;
+        for (int i = 0; i < oldTable.length; i++) {
+            if (oldOccupied[i]) {
+                int index = find(oldTable[i]);
+                table[index] = oldTable[i];
+                occupied[index] = true;
+            }
         }
     }
 
-    /** hash long so both halves matter (good for packed coords) */
     private static int mix(long key) {
-        key ^= (key >>> 33);
+        key ^= key >>> 33;
         key *= 0xff51afd7ed558ccdL;
-        key ^= (key >>> 33);
+        key ^= key >>> 33;
         key *= 0xc4ceb9fe1a85ec53L;
-        key ^= (key >>> 33);
+        key ^= key >>> 33;
         return (int) (key ^ (key >>> 32));
-    }
-
-    /** next power of two >= cap, clamp for max array size */
-    private static int tableSizeFor(int cap) {
-        int n = -1 >>> Integer.numberOfLeadingZeros(cap - 1);
-        return (n < 16) ? 16 : (n >= (1 << 30)) ? (1 << 30) : n + 1;
     }
 }

@@ -1,46 +1,64 @@
 package mikey.me.antiBase;
 
-import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
 import org.bukkit.Material;
 import org.bukkit.World;
-import java.util.Set;
+import org.bukkit.configuration.file.FileConfiguration;
+
 import java.util.HashSet;
-import java.util.List;
+import java.util.Set;
+import java.util.logging.Logger;
 
-public class BaseObfuscator {
-    // we send air so client sees nothing (no fake stone)
-    private static final int AIR_BLOCK_STATE_ID = 0;
-    private static final WrappedBlockState AIR_BLOCK_STATE = SpigotConversionUtil.fromBukkitBlockData(Material.AIR.createBlockData());
-
+public final class BaseObfuscator {
     private final int hideBelowY;
-    private final int proximityDistance;
-    private final Material replacementBlock;
-    private final int replacementBlockStateId;
-    private final WrappedBlockState replacementBlockState;
+    private final int maxRaySteps;
+    private final int scanRadius;
+    private final int terrainPadding;
+    private final int maxScanBlocks;
+    private final int airStateId;
+    private final boolean connectedRendering;
     private final Set<String> blacklistedWorlds;
 
-    public BaseObfuscator(int hideBelowY, int proximityDistance, String replacementBlock, List<String> blacklistedWorlds) {
-        this.hideBelowY = hideBelowY;
-        this.proximityDistance = proximityDistance;
-        this.blacklistedWorlds = new HashSet<>(blacklistedWorlds);
-        Material blockMaterial;
-        try {
-            blockMaterial = Material.valueOf(replacementBlock.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            blockMaterial = Material.STONE;
-        }
-        this.replacementBlock = blockMaterial;
-        this.replacementBlockState = SpigotConversionUtil.fromBukkitBlockData(blockMaterial.createBlockData());
-        this.replacementBlockStateId = this.replacementBlockState.getGlobalId();
+    public BaseObfuscator(FileConfiguration config, Logger logger) {
+        this(config, logger, SpigotConversionUtil.fromBukkitBlockData(Material.AIR.createBlockData()).getGlobalId());
     }
 
-    public static int getAirBlockStateId() { return AIR_BLOCK_STATE_ID; }
-    public static WrappedBlockState getAirBlockState() { return AIR_BLOCK_STATE; }
-    public Material getReplacementBlock() { return replacementBlock; }
-    public int getReplacementBlockStateId() { return replacementBlockStateId; }
-    public WrappedBlockState getReplacementBlockState() { return replacementBlockState; }
+    BaseObfuscator(FileConfiguration config, Logger logger, int airStateId) {
+        hideBelowY = bounded(config, logger, "hide-below-y", 0, -2032, 2032);
+        String mode = config.getString("render-mode", "connected");
+        connectedRendering = !"line-of-sight".equalsIgnoreCase(mode);
+        if (!"line-of-sight".equalsIgnoreCase(mode) && !"connected".equalsIgnoreCase(mode)) {
+            logger.warning("Unknown render-mode; using connected.");
+        }
+        logger.info("Terrain rendering: " + (connectedRendering ? "connected cave flood (sealed spaces stay hidden)" : "line-of-sight"));
+        maxRaySteps = bounded(config, logger, "max-ray-steps", 2000000, 10000, 10000000);
+        if (config.contains("proximity-distance", true)) {
+            logger.warning("proximity-distance is obsolete and ignored; render-mode controls terrain visibility.");
+        }
+        scanRadius = bounded(config, logger, "scan-radius", 64, 16, 96);
+        terrainPadding = bounded(config, logger, "terrain-padding", 2, 0, 4);
+        logger.info("Terrain padding: " + terrainPadding + " extra solid layers behind visible surfaces.");
+        maxScanBlocks = bounded(config, logger, "max-scan-blocks", 50000, 1000, 200000);
+        blacklistedWorlds = new HashSet<>(config.getStringList("blacklisted-worlds"));
+        if (config.contains("replacement-block", true)) {
+            logger.info("replacement-block is obsolete and ignored. Hidden blocks now use AIR to avoid fake solid blocks.");
+        }
+        this.airStateId = airStateId;
+    }
+
+    private static int bounded(FileConfiguration config, Logger logger, String key, int fallback, int min, int max) {
+        int configured = config.getInt(key, fallback);
+        int value = Math.max(min, Math.min(max, configured));
+        if (configured != value) logger.warning(key + " must be between " + min + " and " + max + "; using " + value + ".");
+        return value;
+    }
+
+    public int getAirStateId() { return airStateId; }
+    public boolean usesConnectedRendering() { return connectedRendering; }
     public int getHideBelowY() { return hideBelowY; }
-    public int getProximityDistance() { return proximityDistance; }
+    public int getMaxRaySteps() { return maxRaySteps; }
+    public int getScanRadius() { return scanRadius; }
+    public int getTerrainPadding() { return terrainPadding; }
+    public int getMaxScanBlocks() { return maxScanBlocks; }
     public boolean isWorldBlacklisted(World world) { return blacklistedWorlds.contains(world.getName()); }
 }

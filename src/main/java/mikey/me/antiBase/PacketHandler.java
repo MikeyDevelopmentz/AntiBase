@@ -1,176 +1,199 @@
 package mikey.me.antiBase;
 
+import com.github.retrooper.packetevents.event.PacketListenerAbstract;
 import com.github.retrooper.packetevents.event.PacketListenerPriority;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
-import com.github.retrooper.packetevents.event.PacketListenerAbstract;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
-import com.github.retrooper.packetevents.wrapper.play.server.*;
-import com.github.retrooper.packetevents.protocol.world.chunk.Column;
 import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
+import com.github.retrooper.packetevents.protocol.world.chunk.Column;
+import com.github.retrooper.packetevents.protocol.world.chunk.TileEntity;
+import com.github.retrooper.packetevents.protocol.world.chunk.impl.v_1_18.Chunk_v1_18;
+import com.github.retrooper.packetevents.protocol.world.chunk.palette.PaletteType;
+import com.github.retrooper.packetevents.util.Vector3i;
+import com.github.retrooper.packetevents.wrapper.play.server.*;
 import org.bukkit.entity.Player;
-import java.util.UUID;
-import java.util.List;
-import java.util.ArrayList;
 
-public class PacketHandler extends PacketListenerAbstract {
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+
+public final class PacketHandler extends PacketListenerAbstract {
+    enum UpdateAction { REAL, CLEAR, SUPPRESS }
     private final BaseObfuscator obfuscator;
     private final AntiBase plugin;
+    private final ClientViewTracker clients;
+    private final InteractionVisibility interactions;
+    private final ConsoleDebug debug;
+    private final AtomicLong lastError = new AtomicLong();
 
     public PacketHandler(AntiBase plugin, BaseObfuscator obfuscator) {
         super(PacketListenerPriority.HIGH);
         this.plugin = plugin;
         this.obfuscator = obfuscator;
+        clients = plugin.clientViews();
+        interactions = plugin.interactions();
+        debug = plugin.diagnostics();
     }
 
     @Override
     public void onPacketSend(PacketSendEvent event) {
+        if (event.isCancelled()) return;
+        PacketTypeCommon type = event.getPacketType();
+        if (type != PacketType.Play.Server.CHUNK_DATA && type != PacketType.Play.Server.BLOCK_CHANGE
+                && type != PacketType.Play.Server.MULTI_BLOCK_CHANGE && type != PacketType.Play.Server.BLOCK_ENTITY_DATA
+                && type != PacketType.Play.Server.PLAYER_INFO_REMOVE && type != PacketType.Play.Server.UNLOAD_CHUNK) return;
+        // mining acks are not touched on purpose
+        Player player = event.getPlayer();
+        if (player == null) return;
+        UUID playerId = player.getUniqueId();
+        ViewerState state = plugin.getViewerState(playerId);
+        if (state == null) return;
+        ClientViewTracker.View view = clients.get(playerId, state.worldId());
         try {
-            if (!plugin.isObfuscationEnabled()) return;
-            Player player = event.getPlayer();
-            if (player == null) return;
-            if (obfuscator.isWorldBlacklisted(player.getWorld())) return;
-            UUID playerId = player.getUniqueId();
-            PacketTypeCommon type = event.getPacketType();
-
-            if (type.getName().equals(PacketType.Play.Server.CHUNK_DATA.getName())) {
-                // hide sections below y that player can't see (flood-fill result)
-                WrapperPlayServerChunkData chunkData = new WrapperPlayServerChunkData(event);
-                Column column = chunkData.getColumn();
-                if (column != null) {
-                    BaseChunk[] chunks = column.getChunks();
-                    if (chunks != null) {
-                        boolean modified = false;
-                        int hideBelow = obfuscator.getHideBelowY();
-                        int minHeight = player.getWorld().getMinHeight();
-                        int chunkX = column.getX();
-                        int chunkZ = column.getZ();
-
-                        for (int i = 0; i < chunks.length; i++) {
-                            BaseChunk section = chunks[i];
-                            if (section == null) continue;
-                            
-                            int sectionBaseY = minHeight + (i * 16);
-                            int sectionMaxY = sectionBaseY + 15;
-
-                            if (sectionMaxY < hideBelow) {
-                                if (!plugin.isSectionVisible(playerId, chunkX, sectionBaseY >> 4, chunkZ)) {
-                                    clearChunkSection(section);
-                                    modified = true;
-                                }
-                            } else if (sectionBaseY < hideBelow) {
-                                if (!plugin.isSectionVisible(playerId, chunkX, sectionBaseY >> 4, chunkZ)) {
-                                    clearPartialSection(section, 0, hideBelow - sectionBaseY);
-                                    modified = true;
-                                }
-                            }
-                        }
-                        if (modified) {
-                            chunkData.setColumn(column);
-                            chunkData.write();
-                        }
-                    }
-                }
+            if (type == PacketType.Play.Server.UNLOAD_CHUNK) {
+                WrapperPlayServerUnloadChunk packet = new WrapperPlayServerUnloadChunk(event);
+                if (view != null) event.getTasksAfterSend().add(() -> view.unload(packet.getChunkX(), packet.getChunkZ()));
                 return;
             }
-
-            if (type.getName().equals(PacketType.Play.Server.BLOCK_CHANGE.getName())) {
-                WrapperPlayServerBlockChange blockChange = new WrapperPlayServerBlockChange(event);
-                handleSingleBlockUpdate(player, blockChange.getBlockPosition().getX(), blockChange.getBlockPosition().getY(), blockChange.getBlockPosition().getZ(), blockChange);
-                return;
-            }
-
-            if (type.getName().equals(PacketType.Play.Server.MULTI_BLOCK_CHANGE.getName())) {
-                WrapperPlayServerMultiBlockChange multiChange = new WrapperPlayServerMultiBlockChange(event);
-                int hideBelow = obfuscator.getHideBelowY();
-                int proximity = obfuscator.getProximityDistance();
-                WrapperPlayServerMultiBlockChange.EncodedBlock[] blocks = multiChange.getBlocks();
-                boolean changed = false;
-                for (WrapperPlayServerMultiBlockChange.EncodedBlock block : blocks) {
-                    int by = block.getY();
-                    if (by < hideBelow) {
-                        double dx = player.getLocation().getX() - block.getX();
-                        double dy = player.getLocation().getY() - by;
-                        double dz = player.getLocation().getZ() - block.getZ();
-                        if (dx * dx + dy * dy + dz * dz > (double) proximity * proximity) {
-                            block.setBlockId(BaseObfuscator.getAirBlockStateId());
-                            changed = true;
-                        }
+            if (!plugin.isObfuscationEnabled() || !state.protectedWorld()) return;
+            if (type == PacketType.Play.Server.CHUNK_DATA) {
+                WrapperPlayServerChunkData packet = new WrapperPlayServerChunkData(event);
+                Column source = packet.getColumn();
+                if (source == null || source.getChunks() == null) return;
+                MaskedColumn masked = maskColumn(source, state, playerId);
+                packet.setColumn(masked.column());
+                event.markForReEncode(true);
+                if (view != null) event.getTasksAfterSend().add(() -> {
+                    view.chunkSent(source.getX(), source.getZ(), masked.real());
+                    MovementListener movement = plugin.getMovementListener();
+                    if (movement != null && clients.get(playerId, state.worldId()) == view) {
+                        movement.clientChunkSent(playerId, state.worldId(), source.getX(), source.getZ());
                     }
-                }
-                if (changed) {
-                    multiChange.setBlocks(blocks);
-                }
-                return;
-            }
-
-            if (type.getName().equals(PacketType.Play.Server.PLAYER_INFO_REMOVE.getName())) {
-                WrapperPlayServerPlayerInfoRemove removeInfo = new WrapperPlayServerPlayerInfoRemove(event);
-                List<UUID> uuids = removeInfo.getProfileIds();
-                List<UUID> newUUIDs = new ArrayList<>();
-                boolean changed = false;
-                for (UUID uuid : uuids) {
-                    if (plugin.isHidden(playerId, uuid)) {
-                        changed = true;
-                    } else {
-                        newUUIDs.add(uuid);
+                });
+                debug.count(playerId, ConsoleDebug.Metric.CHUNKS, 1);
+                debug.count(playerId, ConsoleDebug.Metric.MASKED_BLOCKS, masked.masked());
+            } else if (type == PacketType.Play.Server.BLOCK_CHANGE) {
+                WrapperPlayServerBlockChange packet = new WrapperPlayServerBlockChange(event);
+                Vector3i position = packet.getBlockPosition();
+                UpdateAction action = updateAction(playerId, state, view, position.getX(), position.getY(), position.getZ());
+                recordDecision(playerId, state, position.getX(), position.getY(), position.getZ(), action, "single");
+                if (action == UpdateAction.SUPPRESS) event.setCancelled(true);
+                else {
+                    if (action == UpdateAction.CLEAR) {
+                        packet.setBlockID(obfuscator.getAirStateId());
+                        event.markForReEncode(true);
                     }
+                    afterBlock(event, view, position.getX(), position.getY(), position.getZ(), action);
                 }
-                if (changed) {
-                    if (newUUIDs.isEmpty()) {
-                        event.setCancelled(true);
-                    } else {
-                        removeInfo.setProfileIds(newUUIDs);
-                    }
+            } else if (type == PacketType.Play.Server.MULTI_BLOCK_CHANGE) {
+                WrapperPlayServerMultiBlockChange packet = new WrapperPlayServerMultiBlockChange(event);
+                List<WrapperPlayServerMultiBlockChange.EncodedBlock> outgoing = new ArrayList<>();
+                for (WrapperPlayServerMultiBlockChange.EncodedBlock block : packet.getBlocks()) {
+                    UpdateAction action = updateAction(playerId, state, view, block.getX(), block.getY(), block.getZ());
+                    recordDecision(playerId, state, block.getX(), block.getY(), block.getZ(), action, "multi");
+                    if (action == UpdateAction.SUPPRESS) continue;
+                    outgoing.add(action == UpdateAction.CLEAR
+                            ? new WrapperPlayServerMultiBlockChange.EncodedBlock(obfuscator.getAirStateId(),
+                                    block.getX(), block.getY(), block.getZ()) : block);
+                    afterBlock(event, view, block.getX(), block.getY(), block.getZ(), action);
                 }
+                if (outgoing.isEmpty()) event.setCancelled(true);
+                else {
+                    packet.setBlocks(outgoing.toArray(WrapperPlayServerMultiBlockChange.EncodedBlock[]::new));
+                    event.markForReEncode(true);
+                }
+            } else if (type == PacketType.Play.Server.BLOCK_ENTITY_DATA) {
+                Vector3i position = new WrapperPlayServerBlockEntityData(event).getPosition();
+                if (shouldHide(playerId, state, position.getX(), position.getY(), position.getZ())) {
+                    event.setCancelled(true);
+                    debug.count(playerId, ConsoleDebug.Metric.METADATA_DROPPED, 1);
+                }
+            } else {
+                WrapperPlayServerPlayerInfoRemove packet = new WrapperPlayServerPlayerInfoRemove(event);
+                List<UUID> remaining = packet.getProfileIds().stream().filter(id -> !plugin.isHidden(playerId, id)).toList();
+                if (remaining.isEmpty()) event.setCancelled(true);
+                else { packet.setProfileIds(remaining); event.markForReEncode(true); }
             }
-
-        } catch (Exception e) {
-            plugin.getLogger().severe("Error in PacketHandler: " + e.getMessage());
-            e.printStackTrace();
+        } catch (Exception exception) {
+            event.setCancelled(true);
+            long now = System.nanoTime(), previous = lastError.get();
+            if ((previous == 0 || now - previous > 10_000_000_000L) && lastError.compareAndSet(previous, now)) {
+                plugin.getLogger().log(Level.SEVERE, "Cancelled a protected packet after an obfuscation error.", exception);
+            }
         }
     }
 
-    private void handleSingleBlockUpdate(Player player, int bx, int by, int bz, WrapperPlayServerBlockChange packet) {
-        int hideBelow = obfuscator.getHideBelowY();
-        if (by < hideBelow) {
-            int proximity = obfuscator.getProximityDistance();
-            double dx = player.getLocation().getX() - bx;
-            double dy = player.getLocation().getY() - by;
-            double dz = player.getLocation().getZ() - bz;
-            if (dx * dx + dy * dy + dz * dz > (double) proximity * proximity) {
-                packet.setBlockState(BaseObfuscator.getAirBlockState());
-            }
+    UpdateAction updateAction(UUID player, ViewerState state, ClientViewTracker.View view, int x, int y, int z) {
+        if (!shouldHide(player, state, x, y, z)) return UpdateAction.REAL;
+        // suppressing is only safe if we actually sent a placeholder before. revealed/unknown
+        // blocks need AIR or the client keeps stale solid blocks, cancelling alone isnt enough
+        return view != null && view.isKnownMasked(x, y, z) ? UpdateAction.SUPPRESS : UpdateAction.CLEAR;
+    }
+
+    private boolean shouldHide(UUID player, ViewerState state, int x, int y, int z) {
+        return state.shouldHide(x, y, z, obfuscator.getHideBelowY())
+                && (player == null || !interactions.allows(player, state.worldId(), x, y, z));
+    }
+
+    private void afterBlock(PacketSendEvent event, ClientViewTracker.View view, int x, int y, int z, UpdateAction action) {
+        if (view != null && y < obfuscator.getHideBelowY()) {
+            event.getTasksAfterSend().add(() -> view.blockSent(x, y, z, action == UpdateAction.REAL));
         }
     }
 
-    // fill with air so client sees nothing, minimal packet size
-    private void clearChunkSection(BaseChunk section) {
-        try {
-            for (int x = 0; x < 16; x++) {
-                for (int z = 0; z < 16; z++) {
-                    for (int y = 0; y < 16; y++) {
-                        section.set(x, y, z, BaseObfuscator.getAirBlockStateId());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            plugin.getLogger().severe("Error clearing chunk section: " + e.getMessage());
+    private void recordDecision(UUID player, ViewerState state, int x, int y, int z, UpdateAction action, String packet) {
+        ConsoleDebug.Metric metric = switch (action) {
+            case REAL -> ConsoleDebug.Metric.REAL_UPDATES;
+            case CLEAR -> ConsoleDebug.Metric.AIR_CLEARS;
+            case SUPPRESS -> ConsoleDebug.Metric.SUPPRESSED_UPDATES;
+        };
+        debug.count(player, metric, 1);
+        boolean interaction = interactions.allows(player, state.worldId(), x, y, z);
+        if (interaction) debug.count(player, ConsoleDebug.Metric.INTERACTION_CORRECTIONS, 1);
+        if (debug.accepts(player) && (interaction || action != UpdateAction.REAL)) {
+            String message = "packet=" + packet + " world=" + state.worldId() + " pos=" + x + "," + y + "," + z
+                    + " action=" + action + " scanVisible=" + state.visibility().isBlockVisible(x, y, z)
+                    + " interaction=" + interaction;
+            if (interactions.isPinned(player, state.worldId(), x, y, z)) debug.important(player, message);
+            else if (action != UpdateAction.REAL) debug.sample(player, message);
         }
     }
 
-    /** only clear local y range (section that crosses hideBelow - we don't wipe the part above) */
-    private void clearPartialSection(BaseChunk section, int fromLocalY, int toLocalY) {
-        try {
-            for (int x = 0; x < 16; x++) {
-                for (int z = 0; z < 16; z++) {
-                    for (int y = fromLocalY; y < toLocalY; y++) {
-                        section.set(x, y, z, BaseObfuscator.getAirBlockStateId());
-                    }
+    Column maskColumn(Column column, ViewerState state) { return maskColumn(column, state, null).column(); }
+
+    private MaskedColumn maskColumn(Column column, ViewerState state, UUID player) {
+        BaseChunk[] chunks = column.getChunks().clone();
+        LongHashSet real = new LongHashSet(256);
+        int maskedCount = 0;
+        for (int index = 0; index < chunks.length; index++) {
+            BaseChunk section = chunks[index];
+            int baseY = state.minHeight() + index * 16;
+            if (baseY >= obfuscator.getHideBelowY()) break;
+            if (section == null) continue;
+            Chunk_v1_18 masked = new Chunk_v1_18(0, PaletteType.CHUNK.create(), ((Chunk_v1_18) section).getBiomeData());
+            for (int y = 0; y < 16; y++) for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++) {
+                int bx = (column.getX() << 4) + x, by = baseY + y, bz = (column.getZ() << 4) + z;
+                if (shouldHide(player, state, bx, by, bz)) {
+                    masked.set(x, y, z, obfuscator.getAirStateId());
+                    maskedCount++;
+                } else {
+                    masked.set(x, y, z, section.getBlockId(x, y, z));
+                    if (by < obfuscator.getHideBelowY()) real.add(Coordinates.block(bx, by, bz));
                 }
             }
-        } catch (Exception e) {
-            plugin.getLogger().severe("Error clearing partial chunk section: " + e.getMessage());
+            chunks[index] = masked;
         }
+        TileEntity[] visibleEntities = Arrays.stream(column.getTileEntities())
+                .filter(entity -> !shouldHide(player, state, (column.getX() << 4) + entity.getX(),
+                        entity.getY(), (column.getZ() << 4) + entity.getZ()))
+                .toArray(TileEntity[]::new);
+        return new MaskedColumn(new Column(column.getX(), column.getZ(), column.isFullChunk(),
+                chunks, visibleEntities, column.getHeightmaps()), real, maskedCount);
     }
+
+    private record MaskedColumn(Column column, LongHashSet real, int masked) { }
 }

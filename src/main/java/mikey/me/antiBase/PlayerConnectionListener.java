@@ -1,54 +1,64 @@
 package mikey.me.antiBase;
 
-import org.bukkit.Chunk;
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 
-public class PlayerConnectionListener implements Listener {
+import java.util.ArrayList;
+import java.util.List;
+
+public final class PlayerConnectionListener implements Listener {
     private final AntiBase plugin;
 
-    public PlayerConnectionListener(AntiBase plugin) {
-        this.plugin = plugin;
-    }
+    public PlayerConnectionListener(AntiBase plugin) { this.plugin = plugin; }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
-        plugin.cleanupPlayer(event.getPlayer().getUniqueId());
+        Player leaving = event.getPlayer();
+        List<Player> retainedTabEntries = new ArrayList<>();
+        for (Player viewer : plugin.getServer().getOnlinePlayers()) {
+            if (plugin.isHidden(viewer.getUniqueId(), leaving.getUniqueId())) retainedTabEntries.add(viewer);
+        }
+        plugin.cleanupPlayer(leaving.getUniqueId());
+        // hidePlayer already killed normal tracking so clean up the tab entries manually
+        for (Player viewer : retainedTabEntries) {
+            PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                    new WrapperPlayServerPlayerInfoRemove(List.of(leaving.getUniqueId())));
+        }
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.LOWEST)
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        player.getScheduler().runDelayed(plugin, (task) -> {
-            plugin.getMovementListener().updateVisibility(event.getPlayer());
-            plugin.getMovementListener().updateOthersViewOfPlayer(event.getPlayer());
-        }, null, 5L);
+        plugin.updatePosition(player, player.getLocation());
+        plugin.getMovementListener().updateVisibility(player);
     }
 
-    /** chunk just loaded near someone - refresh their visibility so the new chunk sends correct hidden/shown sections */
-    @EventHandler
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onWorldChange(PlayerChangedWorldEvent event) {
+        plugin.getMovementListener().resetPlayer(event.getPlayer(), event.getPlayer().getLocation());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onRespawn(PlayerRespawnEvent event) {
+        plugin.getMovementListener().resetPlayer(event.getPlayer(), event.getRespawnLocation());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onChunkLoad(ChunkLoadEvent event) {
         if (!plugin.isObfuscationEnabled()) return;
-        Chunk chunk = event.getChunk();
-        int chunkX = chunk.getX();
-        int chunkZ = chunk.getZ();
-
-        for (Player player : chunk.getWorld().getPlayers()) {
-            int playerChunkX = player.getLocation().getBlockX() >> 4;
-            int playerChunkZ = player.getLocation().getBlockZ() >> 4;
-            int dx = Math.abs(chunkX - playerChunkX);
-            int dz = Math.abs(chunkZ - playerChunkZ);
-            if (dx <= 2 && dz <= 2) {
-                player.getScheduler().runDelayed(plugin, (task) -> {
-                    if (player.isOnline()) {
-                        plugin.getMovementListener().updateVisibility(player);
-                    }
-                }, null, 1L);
-            }
+        for (Player player : event.getWorld().getPlayers()) {
+            int dx = Math.abs(event.getChunk().getX() - (player.getLocation().getBlockX() >> 4));
+            int dz = Math.abs(event.getChunk().getZ() - (player.getLocation().getBlockZ() >> 4));
+            if (dx <= 6 && dz <= 6) plugin.getMovementListener().updateVisibility(player);
         }
     }
 }

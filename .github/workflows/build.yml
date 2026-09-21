@@ -1,0 +1,41 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and run regression tests
+        shell: bash
+        run: bash ./gradlew --no-daemon clean build
+      - name: Verify connected rendering on the full cave map
+        shell: bash
+        run: bash ./gradlew --no-daemon caveSimulation
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AntiBase-${{ matrix.os }}
+          path: |
+            build/libs/*.jar
+            build/cave-simulation/
+          if-no-files-found: error
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.os }}
+          path: build/reports/tests/test/

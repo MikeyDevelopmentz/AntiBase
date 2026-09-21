@@ -1,7 +1,35 @@
 enabled: true
+
+# terrain below this y gets obfuscated, sealed spaces stay hidden
 hide-below-y: 0
-proximity-distance: 16
-replacement-block: STONE
+
+# connected (default): flood through air, water, glass and partial blocks. whole connected
+# caves get sent before you enter them, including rooms around corners (on purpose, kills
+# the pop-in when walking into a room).
+# line-of-sight: old ray method, hides corners better but terrain pops in more.
+# players/mobs still need actual line of sight in both modes.
+render-mode: connected
+
+# extra solid layers behind visible terrain (0..4). preloads a mining buffer so fast
+# mining doesnt flash unrendered blocks. reveals real buried blocks within the shell
+# incl ores, but never goes through walls or reveals mobs.
+terrain-padding: 2
+
+# hidden blocks in initial chunks are sent as AIR, updates for already hidden blocks
+# get suppressed afterwards. old replacement-block setting is ignored, even if its STONE.
+# periodic console summaries. /antibase debug on [player] = live capture.
+console-debug: false
+
+# scan reach (16..96). connected mode rounds up to whole sections around the player,
+# 64 = a 144 block wide box. only reads loaded chunks.
+scan-radius: 64
+
+# line-of-sight mode only. connected mode has no candidate/ray cutoff.
+# max candidate blocks per scan (1000..200000)
+max-scan-blocks: 50000
+# max ray steps per scan (10000..10000000). running out keeps unchecked blocks hidden
+max-ray-steps: 2000000
+
 blacklisted-worlds:
   - world_nether
   - world_the_end

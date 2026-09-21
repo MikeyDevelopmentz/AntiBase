@@ -9,6 +9,7 @@
 
 # Package Files #
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 *.zip
@@ -20,10 +21,19 @@ hs_err_pid*
 
 # Build tools
 .gradle/
+.gradle-local/
+.work/
 build/
 bin/
 target/
+artifacts/
 gradle.properties
+
+# local agent/tool state
+.opencode/
+
+# local notes, not part of the plugin
+docs/rust-*
 
 # IDEs
 .idea/

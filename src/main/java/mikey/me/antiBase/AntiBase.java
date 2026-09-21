@@ -1,147 +1,145 @@
 package mikey.me.antiBase;
 
 import com.github.retrooper.packetevents.PacketEvents;
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import java.util.UUID;
+
 import java.util.Map;
 import java.util.Set;
-import java.util.Collections;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.List;
+import java.util.logging.Level;
 
 public final class AntiBase extends JavaPlugin {
-    private final Map<UUID, LongHashSet> visibleSections = new ConcurrentHashMap<>();
-    private final Map<UUID, LongHashSet> visibleBlocks = new ConcurrentHashMap<>();
+    private final Map<UUID, ViewerState> viewers = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> hiddenPlayers = new ConcurrentHashMap<>();
-    private final Set<UUID> debugPlayers = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Set<UUID> debugPlayers = ConcurrentHashMap.newKeySet();
+    private final ClientViewTracker clientViews = new ClientViewTracker();
+    private final InteractionVisibility interactions = new InteractionVisibility();
+    private final ConsoleDebug diagnostics = new ConsoleDebug();
     private MovementListener movementListener;
+    private PacketHandler packetHandler;
+    private BaseObfuscator obfuscator;
     private volatile boolean enabled;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        this.enabled = getConfig().getBoolean("enabled", true);
-        int hideBelowY = getConfig().getInt("hide-below-y");
-        int proximityDistance = getConfig().getInt("proximity-distance");
-        String replacementBlock = getConfig().getString("replacement-block");
-        List<String> blacklistedWorlds = getConfig().getStringList("blacklisted-worlds");
-        BaseObfuscator obfuscator = new BaseObfuscator(hideBelowY, proximityDistance, replacementBlock, blacklistedWorlds);
-        this.movementListener = new MovementListener(this, obfuscator);
-
+        obfuscator = new BaseObfuscator(getConfig(), getLogger());
+        enabled = getConfig().getBoolean("enabled", true);
+        diagnostics.configure(getConfig().getBoolean("console-debug", false), null, "all players");
+        packetHandler = new PacketHandler(this, obfuscator);
         try {
-            PacketEvents.getAPI().getEventManager().registerListener(new PacketHandler(this, obfuscator));
-        } catch (Exception e) {
-            getLogger().warning("Failed to register PacketEvents listener: " + e.getMessage());
+            PacketEvents.getAPI().getEventManager().registerListener(packetHandler);
+        } catch (Exception exception) {
+            getLogger().log(Level.SEVERE, "Cannot start AntiBase without its packet listener.", exception);
+            getServer().getPluginManager().disablePlugin(this);
+            return;
         }
-
+        movementListener = new MovementListener(this, obfuscator);
         getServer().getPluginManager().registerEvents(new PlayerConnectionListener(this), this);
-
         getServer().getPluginManager().registerEvents(movementListener, this);
         getServer().getPluginManager().registerEvents(new MiningListener(this, obfuscator), this);
         getServer().getPluginManager().registerEvents(new EntityListener(this, obfuscator), this);
-        getServer().getCommandMap().register("antibase", new AntibaseCommand(this));
+        AntibaseCommand command = new AntibaseCommand(this);
+        getCommand("antibase").setExecutor(command);
+        getCommand("antibase").setTabCompleter(command);
+        getLogger().info("Rendering mode: AIR for hidden chunk data; suppress updates only for already-masked blocks. "
+                + "Use /antibase debug on [player] for console diagnostics.");
+        for (Player player : getServer().getOnlinePlayers()) {
+            updatePosition(player, player.getLocation());
+            movementListener.updateVisibility(player);
+        }
     }
 
     @Override
     public void onDisable() {
-        movementListener.shutdown();
-    }
-
-    public boolean isSectionVisible(UUID playerId, int chunkX, int sectionY, int chunkZ) {
-        LongHashSet visible = visibleSections.get(playerId);
-        return visible != null && visible.contains(packSection(chunkX, sectionY, chunkZ));
-    }
-
-    public void updateSectionVisibility(UUID playerId, int chunkX, int sectionY, int chunkZ, boolean isVisible) {
-        LongHashSet visible = visibleSections.computeIfAbsent(playerId, k -> new LongHashSet(512));
-        long key = packSection(chunkX, sectionY, chunkZ);
-        if (isVisible) {
-            visible.add(key);
-        } else {
-            visible.remove(key);
+        enabled = false;
+        if (movementListener != null) {
+            movementListener.restoreAll();
+            movementListener.shutdown();
         }
+        if (packetHandler != null && PacketEvents.getAPI() != null) {
+            PacketEvents.getAPI().getEventManager().unregisterListener(packetHandler);
+        }
+        viewers.clear();
+        hiddenPlayers.clear();
+        debugPlayers.clear();
+        clientViews.clear();
+        interactions.clear();
+        diagnostics.configure(false, null, "all players");
+    }
+
+    ViewerState getViewerState(UUID playerId) { return viewers.get(playerId); }
+    ClientViewTracker clientViews() { return clientViews; }
+    InteractionVisibility interactions() { return interactions; }
+    ConsoleDebug diagnostics() { return diagnostics; }
+
+    void updatePosition(Player player, Location location) {
+        ViewerState previous = viewers.get(player.getUniqueId());
+        UUID worldId = location.getWorld().getUID();
+        if (previous == null || !previous.worldId().equals(worldId)) clientViews.reset(player.getUniqueId(), worldId);
+        VisibilitySnapshot visibility = previous != null && previous.worldId().equals(worldId)
+                ? previous.visibility() : VisibilitySnapshot.EMPTY;
+        viewers.put(player.getUniqueId(), new ViewerState(worldId, location.getWorld().getMinHeight(),
+                !obfuscator.isWorldBlacklisted(location.getWorld()),
+                location.getX(), location.getY(), location.getZ(), visibility));
+    }
+
+    void setVisibility(UUID playerId, VisibilitySnapshot visibility) {
+        viewers.computeIfPresent(playerId, (id, state) -> state.withVisibility(visibility));
     }
 
     public boolean isBlockVisible(UUID playerId, int x, int y, int z) {
-        LongHashSet blocks = visibleBlocks.get(playerId);
-        return blocks != null && blocks.contains(packCoord(x, y, z));
-    }
-
-    public boolean hasVisibilityData(UUID playerId) {
-        return visibleBlocks.containsKey(playerId);
+        ViewerState state = viewers.get(playerId);
+        return state != null && state.visibility().isBlockVisible(x, y, z);
     }
 
     public void setHidden(UUID viewerId, UUID targetId, boolean hidden) {
-        Set<UUID> hiddenSet = hiddenPlayers.computeIfAbsent(viewerId, k -> Collections.newSetFromMap(new ConcurrentHashMap<>()));
-        if (hidden) {
-            hiddenSet.add(targetId);
-        } else {
-            hiddenSet.remove(targetId);
+        if (hidden) hiddenPlayers.computeIfAbsent(viewerId, key -> ConcurrentHashMap.newKeySet()).add(targetId);
+        else {
+            Set<UUID> targets = hiddenPlayers.get(viewerId);
+            if (targets != null) {
+                targets.remove(targetId);
+                if (targets.isEmpty()) hiddenPlayers.remove(viewerId, targets);
+            }
         }
     }
 
     public boolean isHidden(UUID viewerId, UUID targetId) {
-        Set<UUID> hiddenSet = hiddenPlayers.get(viewerId);
-        return hiddenSet != null && hiddenSet.contains(targetId);
+        Set<UUID> targets = hiddenPlayers.get(viewerId);
+        return targets != null && targets.contains(targetId);
     }
 
-    public void setVisibleBlocks(UUID playerId, LongHashSet blocks) {
-        visibleBlocks.put(playerId, blocks);
-    }
-
-    // pack block coords into one long for set lookups
-    public long packCoord(int x, int y, int z) {
-        return (((long)x & 0x3FFFFFFL) << 38) | (((long)z & 0x3FFFFFFL) << 12) | ((long)y & 0xFFFL);
-    }
-
-    public long packSection(int x, int y, int z) {
-        return ((long) (x & 0x3FFFFF) << 42) | ((long) (z & 0x3FFFFF) << 20) | (y & 0xFF);
-    }
-
-    /** unpack section key to [chunkX, sectionY, chunkZ]; sign-extend for negative coords */
-    public int[] unpackSection(long key) {
-        int cx = (int)((key >> 42) & 0x3FFFFF);
-        int cz = (int)((key >> 20) & 0x3FFFFF);
-        int sy = (int)(key & 0xFF);
-        if (cx > 0x1FFFFF) cx -= 0x400000;
-        if (cz > 0x1FFFFF) cz -= 0x400000;
-        if (sy > 127) sy -= 256;
-        return new int[]{cx, sy, cz};
-    }
-
-    public boolean isDebugEnabled(UUID playerId) {
-        return debugPlayers.contains(playerId);
-    }
+    public boolean isDebugEnabled(UUID playerId) { return debugPlayers.contains(playerId); }
 
     public void setDebug(UUID playerId, boolean enabled) {
-        if (enabled) {
-            debugPlayers.add(playerId);
-        } else {
-            debugPlayers.remove(playerId);
-        }
+        if (enabled) debugPlayers.add(playerId);
+        else debugPlayers.remove(playerId);
     }
 
-    public boolean isObfuscationEnabled() {
-        return enabled;
-    }
+    public boolean isObfuscationEnabled() { return enabled; }
 
     public void setObfuscationEnabled(boolean enabled) {
+        if (this.enabled == enabled) return;
         this.enabled = enabled;
         getConfig().set("enabled", enabled);
         saveConfig();
+        clientViews.clear();
+        for (Player player : getServer().getOnlinePlayers()) clientViews.reset(player.getUniqueId(), player.getWorld().getUID());
+        movementListener.resetAll();
     }
 
-    public MovementListener getMovementListener() {
-        return movementListener;
-    }
+    public MovementListener getMovementListener() { return movementListener; }
 
     public void cleanupPlayer(UUID uuid) {
-        visibleSections.remove(uuid);
-        visibleBlocks.remove(uuid);
+        if (movementListener != null) movementListener.cleanupPlayer(uuid);
+        viewers.remove(uuid);
+        debugPlayers.remove(uuid);
+        clientViews.remove(uuid);
+        interactions.remove(uuid);
         hiddenPlayers.remove(uuid);
-        for (Set<UUID> hidden : hiddenPlayers.values()) {
-            hidden.remove(uuid);
-        }
-        movementListener.cleanupPlayer(uuid);
+        hiddenPlayers.values().forEach(targets -> targets.remove(uuid));
     }
 }
