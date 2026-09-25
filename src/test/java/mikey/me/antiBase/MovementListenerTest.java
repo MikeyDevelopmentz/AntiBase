@@ -15,9 +15,10 @@ import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.entity.FallingBlock;
 import com.destroystokyo.paper.event.server.ServerTickEndEvent;
 import io.papermc.paper.math.Position;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.bukkit.scheduler.BukkitScheduler;
-import org.bukkit.scheduler.BukkitTask;
+import io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,7 @@ import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -52,13 +54,17 @@ class MovementListenerTest {
         when(plugin.interactions()).thenReturn(new InteractionVisibility());
         when(plugin.diagnostics()).thenReturn(new ConsoleDebug());
         server = mock(Server.class);
-        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        GlobalRegionScheduler scheduler = mock(GlobalRegionScheduler.class);
         when(plugin.getServer()).thenReturn(server);
-        when(server.getScheduler()).thenReturn(scheduler);
-        when(scheduler.runTaskTimer(eq(plugin), any(Runnable.class), eq(1L), eq(1L))).thenAnswer(call -> {
-            tick = call.getArgument(1);
-            return mock(BukkitTask.class);
+        when(server.getGlobalRegionScheduler()).thenReturn(scheduler);
+        when(scheduler.runAtFixedRate(eq(plugin), any(), eq(1L), eq(1L))).thenAnswer(call -> {
+            Consumer<ScheduledTask> task = call.getArgument(1);
+            tick = () -> task.accept(null);
+            return mock(ScheduledTask.class);
         });
+        // plain paper, test thread owns everything
+        when(server.isOwnedByCurrentRegion(any(Entity.class))).thenReturn(true);
+        when(server.isOwnedByCurrentRegion(any(World.class), anyInt(), anyInt())).thenReturn(true);
         when(plugin.isObfuscationEnabled()).thenReturn(true);
         obfuscator = mock(BaseObfuscator.class);
         when(obfuscator.getScanRadius()).thenReturn(16);

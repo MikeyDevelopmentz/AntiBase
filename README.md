@@ -22,7 +22,7 @@ AntiBase intercepts outgoing packets to hide underground structures and entities
 
 ## Installation
 
-1. Drop AntiBase.jar into your `plugins` folder. Requires Paper 1.21.11, Java 21 and PacketEvents 2.11.1 as a separate plugin.
+1. Drop AntiBase.jar into your `plugins` folder. Requires Paper or Folia 26.2, Java 25 and PacketEvents 2.14.0 as a separate plugin.
 2. Restart the server.
 3. Configure `hide-below-y` in the `config.yml` (default is 0).
 
@@ -55,7 +55,7 @@ Permissions default to operators.
 
 ## Building
 
-`./gradlew clean build` with JDK 21. This compiles the plugin and runs the unit + regression tests. There are also gradle tasks for the cave simulation (`caveSimulation`), the old-method baseline (`caveBaseline`), the visibility benchmark (`visibilityBenchmark`) and an optional real-Paper chest state check (`paperChestVerification`). GitHub Actions builds and tests on Linux and Windows.
+`./gradlew clean build` with JDK 25. This compiles the plugin and runs the unit + regression tests. There are also gradle tasks for the cave simulation (`caveSimulation`), the old-method baseline (`caveBaseline`), the visibility benchmark (`visibilityBenchmark`) and an optional real-Paper chest state check (`paperChestVerification`). GitHub Actions builds and tests on Linux and Windows.
 
 ---
-*Requires Paper 1.21.11 and PacketEvents 2.11.1. Folia is not supported.*
+*Requires Paper 26.2 and PacketEvents 2.14.0. Folia is supported.*

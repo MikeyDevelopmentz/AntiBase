@@ -68,7 +68,9 @@ final class BlockUpdates {
             }
             updates.size -= batch.size();
             totalBudget -= batch.size();
-            sendNow(player, batch);
+            // sendNow reads chunks so it has to run on the players region
+            if (plugin.getServer().isOwnedByCurrentRegion(player)) sendNow(player, batch);
+            else player.getScheduler().run(plugin, task -> sendNow(player, batch), null);
             if (plugin.diagnostics().accepts(id)) plugin.diagnostics().sample(id,
                     "deltaAgeMs=" + ((System.nanoTime() - updates.started) / 1_000_000)
                             + " processed=" + batch.size() + " remaining=" + updates.size);

@@ -11,7 +11,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.entity.EntityPoseChangeEvent;
-import org.bukkit.scheduler.BukkitTask;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import com.destroystokyo.paper.event.server.ServerTickEndEvent;
@@ -44,6 +44,7 @@ public final class MovementListener implements Listener {
                 return thread;
             });
     // these are server thread only, dont touch from packet threads
+    // on folia region threads hit these too, thats why its all synchronized
     private final Set<UUID> dirty = new LinkedHashSet<>();
     private final Set<UUID> urgent = new LinkedHashSet<>();
     private final Map<UUID, Set<Long>> corrections = new HashMap<>();
@@ -61,18 +62,18 @@ public final class MovementListener implements Listener {
     private final Map<UUID, TerrainChangeWork> terrainChanges = new LinkedHashMap<>();
     private final Set<ClientChunk> clientChunks = ConcurrentHashMap.newKeySet();
     private final ConcurrentLinkedQueue<ScanResult> completed = new ConcurrentLinkedQueue<>();
-    private final BukkitTask task;
+    private final ScheduledTask task;
     private int ticks;
 
     public MovementListener(AntiBase plugin, BaseObfuscator obfuscator) {
         this.plugin = plugin;
         this.obfuscator = obfuscator;
         blockUpdates = new BlockUpdates(plugin, obfuscator);
-        task = plugin.getServer().getScheduler().runTaskTimer(plugin, this::tick, 1L, 1L);
+        task = plugin.getServer().getGlobalRegionScheduler().runAtFixedRate(plugin, scheduled -> tick(), 1L, 1L);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onMove(PlayerMoveEvent event) {
+    public synchronized void onMove(PlayerMoveEvent event) {
         if (event instanceof PlayerTeleportEvent || event.getTo() == null) return;
         Location from = event.getFrom(), to = event.getTo();
         plugin.updatePosition(event.getPlayer(), to);
@@ -85,7 +86,7 @@ public final class MovementListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void onPoseChange(EntityPoseChangeEvent event) {
+    public synchronized void onPoseChange(EntityPoseChangeEvent event) {
         if (event.getEntity() instanceof Player player) {
             if (alreadyCovered(player, player.getEyeLocation())) return;
             updateVisibility(player);
@@ -100,7 +101,7 @@ public final class MovementListener implements Listener {
     }
 
     /** just marks dirty. captures + entity stuff stay on the server thread */
-    public void updateVisibility(Player player) {
+    public synchronized void updateVisibility(Player player) {
         if (plugin.isObfuscationEnabled() && !obfuscator.isWorldBlacklisted(player.getWorld())) {
             dirty.add(player.getUniqueId());
         }
@@ -166,7 +167,7 @@ public final class MovementListener implements Listener {
         queueTerrainChanges(block.getWorld(), java.util.List.of(block), true, BlockOcclusion.classify(destination) == 1);
     }
 
-    private void queueTerrainChanges(World world, Collection<Block> edited, boolean physics, boolean closesSpace) {
+    private synchronized void queueTerrainChanges(World world, Collection<Block> edited, boolean physics, boolean closesSpace) {
         if (!plugin.isObfuscationEnabled() || obfuscator.isWorldBlacklisted(world) || edited.isEmpty()) return;
         LongHashSet changed = new LongHashSet(edited.size());
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
@@ -209,7 +210,7 @@ public final class MovementListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void onTickEnd(ServerTickEndEvent event) {
+    public synchronized void onTickEnd(ServerTickEndEvent event) {
         tickSnapshots.clear(); // edits landed after the scheduler capture
         processPendingEntities();
         long deadline = System.nanoTime() + 8_000_000L;
@@ -219,8 +220,9 @@ public final class MovementListener implements Listener {
             var entry = pending.next();
             UUID id = entry.getKey();
             TerrainChangeWork work = entry.getValue();
-            pending.remove();
             Player player = plugin.getServer().getPlayer(id);
+            if (player != null && !plugin.getServer().isOwnedByCurrentRegion(player)) continue; // stays queued, the players region gets it
+            pending.remove();
             ViewerState state = plugin.getViewerState(id);
             if (player == null || !player.isOnline() || state == null || !state.worldId().equals(work.world)
                     || !player.getWorld().getUID().equals(work.world) || !plugin.isObfuscationEnabled() || !state.protectedWorld()) continue;
@@ -271,7 +273,7 @@ public final class MovementListener implements Listener {
     }
 
     /** a topology change must not get stomped by a scan of the old world thats still running */
-    void invalidateVisibility(Player player) {
+    synchronized void invalidateVisibility(Player player) {
         tickSnapshots.remove(player.getWorld().getUID());
         floodWindows.remove(player.getUniqueId());
         if (obfuscator.usesConnectedRendering()) invalidFloods.add(player.getUniqueId());
@@ -280,7 +282,7 @@ public final class MovementListener implements Listener {
     }
 
     /** only pin blocks the player was actually shown, never a whole area */
-    void protectInteraction(Player player, Block block, String operation, boolean cancelled) {
+    synchronized void protectInteraction(Player player, Block block, String operation, boolean cancelled) {
         if (!plugin.isObfuscationEnabled() || obfuscator.isWorldBlacklisted(block.getWorld())) return;
         UUID id = player.getUniqueId(), worldId = block.getWorld().getUID();
         ViewerState state = plugin.getViewerState(id);
@@ -301,7 +303,7 @@ public final class MovementListener implements Listener {
         urgent.add(id);
     }
 
-    String queueStatus() {
+    synchronized String queueStatus() {
         return "terrainMode=" + (obfuscator.usesConnectedRendering() ? "connected" : "line-of-sight")
                 + " terrainPadding=" + obfuscator.getTerrainPadding()
                 + " entityChecksPending=" + pendingEntities.size()
@@ -312,7 +314,7 @@ public final class MovementListener implements Listener {
                 + " clientChunks=" + clientChunks.size();
     }
 
-    private void tick() {
+    private synchronized void tick() {
         tickSnapshots.clear();
         processPendingEntities();
         processClientChunks();
@@ -387,14 +389,14 @@ public final class MovementListener implements Listener {
                 applyResults(player, VisibilitySnapshot.EMPTY);
                 continue;
             }
-            startScan(player);
+            onPlayerThread(player, () -> startScan(player));
             captures++;
         }
         blockUpdates.flush(16384, 4096);
         flushRefreshes(4); // full chunks are only for resets/restores
         tickSnapshots.clear();
         if (ticks % 5 == 1 && plugin.isObfuscationEnabled()) {
-            for (Player player : plugin.getServer().getOnlinePlayers()) updateEntitiesVisibility(player);
+            for (Player player : plugin.getServer().getOnlinePlayers()) onPlayerThread(player, () -> updateEntitiesVisibility(player));
         }
         if (ticks % 40 == 0) plugin.diagnostics().flush(plugin.getLogger(), queueStatus());
     }
@@ -405,9 +407,13 @@ public final class MovementListener implements Listener {
         int scans = 0;
         while (pending.hasNext() && scans++ < 2) {
             UUID id = pending.next();
+            Player player = plugin.getServer().getPlayer(id);
+            if (player != null && !plugin.getServer().isOwnedByCurrentRegion(player)) {
+                if (plugin.getServer().isGlobalTickThread()) onPlayerThread(player, this::processInteractions);
+                continue;
+            }
             pending.remove();
             Set<Long> targets = corrections.remove(id);
-            Player player = plugin.getServer().getPlayer(id);
             if (player == null || !player.isOnline() || !plugin.isObfuscationEnabled()) continue;
             World world = player.getWorld();
             if (obfuscator.isWorldBlacklisted(world)) continue;
@@ -534,7 +540,10 @@ public final class MovementListener implements Listener {
             batch.forEach(key -> {
                 entry.getValue().remove(key);
                 int cx = Coordinates.chunkX(key), cz = Coordinates.chunkZ(key);
-                if (world.isChunkLoaded(cx, cz)) world.refreshChunk(cx, cz);
+                Runnable refresh = () -> { if (world.isChunkLoaded(cx, cz)) world.refreshChunk(cx, cz); };
+                // refreshChunk has to run on whatever region owns the chunk
+                if (plugin.getServer().isOwnedByCurrentRegion(world, cx, cz)) refresh.run();
+                else if (plugin.isEnabled()) plugin.getServer().getRegionScheduler().execute(plugin, world, cx, cz, refresh);
             });
             budget -= batch.size();
             if (entry.getValue().size() == 0) worlds.remove();
@@ -568,13 +577,15 @@ public final class MovementListener implements Listener {
         }
     }
 
-    void updateEntityForViewer(Player viewer, Entity target) {
+    synchronized void updateEntityForViewer(Player viewer, Entity target) {
+        // both have to be on this region, cant be tracked across regions anyway
+        if (!plugin.getServer().isOwnedByCurrentRegion(viewer) || !plugin.getServer().isOwnedByCurrentRegion(target)) return;
         setEntityVisibility(viewer, target, entityVisibleAt(viewer, target, target.getLocation()));
     }
 
     /** paper calls this before an entitys first pairing packets. hiding is deferred
      * til the tracker callback returns, cancelling the event kills the pairing */
-    boolean trackEntity(Player viewer, Entity target) {
+    synchronized boolean trackEntity(Player viewer, Entity target) {
         trackedEntities.computeIfAbsent(viewer.getUniqueId(), key -> new HashSet<>()).add(target.getUniqueId());
         boolean visible = entityVisibleAt(viewer, target, target.getLocation());
         if (!visible) {
@@ -584,7 +595,7 @@ public final class MovementListener implements Listener {
         return visible;
     }
 
-    void untrackEntity(Player viewer, Entity target) {
+    synchronized void untrackEntity(Player viewer, Entity target) {
         Set<UUID> tracked = trackedEntities.get(viewer.getUniqueId());
         if (tracked != null) {
             tracked.remove(target.getUniqueId());
@@ -592,11 +603,12 @@ public final class MovementListener implements Listener {
         }
     }
 
-    void entityTeleporting(Entity target, Location destination) {
+    synchronized void entityTeleporting(Entity target, Location destination) {
         pendingEntities.add(target.getUniqueId());
         if (destination.getWorld() == null) return;
         tickSnapshots.remove(destination.getWorld().getUID());
         for (Player viewer : destination.getWorld().getPlayers()) {
+            if (!plugin.getServer().isOwnedByCurrentRegion(viewer)) continue;
             plugin.diagnostics().count(viewer.getUniqueId(), ConsoleDebug.Metric.ENTITY_TELEPORTS, 1);
             // hide before the teleport packet, reveal only after the move commits
             if (!entityVisibleAt(viewer, target, destination)) setEntityVisibility(viewer, target, false);
@@ -608,16 +620,18 @@ public final class MovementListener implements Listener {
         // a cancelled pairing is already in papers seenBy set. set up the hide API
         // state before rechecking so even an instant reveal forces a fresh pairing
         Set<PendingPairing> pairings = Set.copyOf(pendingPairings);
-        pendingPairings.clear();
         for (PendingPairing pair : pairings) {
             Player viewer = plugin.getServer().getPlayer(pair.viewer);
             Entity target = plugin.getServer().getEntity(pair.entity);
-            if (viewer != null && viewer.isOnline() && target != null) setEntityVisibility(viewer, target, false);
+            if (viewer != null && !plugin.getServer().isOwnedByCurrentRegion(viewer)) continue;
+            pendingPairings.remove(pair);
+            if (viewer != null && viewer.isOnline() && target != null && plugin.getServer().isOwnedByCurrentRegion(target)) setEntityVisibility(viewer, target, false);
         }
         Set<UUID> pending = Set.copyOf(pendingEntities);
-        pendingEntities.clear();
         for (UUID id : pending) {
             Entity target = plugin.getServer().getEntity(id);
+            if (target != null && !plugin.getServer().isOwnedByCurrentRegion(target)) continue;
+            pendingEntities.remove(id);
             if (target == null) continue;
             for (Player viewer : plugin.getServer().getOnlinePlayers()) {
                 if (!viewer.equals(target)) updateEntityForViewer(viewer, target);
@@ -693,7 +707,7 @@ public final class MovementListener implements Listener {
         }
     }
 
-    void resetPlayer(Player player, Location destination) {
+    synchronized void resetPlayer(Player player, Location destination) {
         floodWindows.remove(player.getUniqueId());
         invalidFloods.remove(player.getUniqueId());
         terrainChanges.remove(player.getUniqueId());
@@ -715,18 +729,18 @@ public final class MovementListener implements Listener {
         if (plugin.isObfuscationEnabled() && !obfuscator.isWorldBlacklisted(destination.getWorld())) dirty.add(player.getUniqueId());
     }
 
-    public void resetAll() {
-        for (Player player : plugin.getServer().getOnlinePlayers()) {
+    public synchronized void resetAll() {
+        for (Player player : plugin.getServer().getOnlinePlayers()) onPlayerThread(player, () -> {
             resetPlayer(player, player.getLocation());
             queueClientChunks(player);
-        }
+        });
     }
 
-    public void restoreAll() {
-        for (Player player : plugin.getServer().getOnlinePlayers()) {
+    public synchronized void restoreAll() {
+        for (Player player : plugin.getServer().getOnlinePlayers()) onPlayerThread(player, () -> {
             restoreEntities(player);
             queueClientChunks(player);
-        }
+        });
         flushRefreshes(Integer.MAX_VALUE);
     }
 
@@ -740,11 +754,24 @@ public final class MovementListener implements Listener {
     private void restoreEntities(Player viewer) {
         Set<UUID> hidden = hiddenEntities.get(viewer.getUniqueId());
         if (hidden == null) return;
+        boolean skipped = false;
         for (UUID id : Set.copyOf(hidden)) {
             Entity target = plugin.getServer().getEntity(id);
-            if (target != null) setEntityVisibility(viewer, target, true);
+            // cant touch entities on other regions, keep those so the entity pass fixes them later
+            if (target != null && !plugin.getServer().isOwnedByCurrentRegion(target)) skipped = true;
+            else if (target != null) setEntityVisibility(viewer, target, true);
         }
-        hiddenEntities.remove(viewer.getUniqueId());
+        if (!skipped) hiddenEntities.remove(viewer.getUniqueId());
+    }
+
+    private void onPlayerThread(Player player, Runnable work) {
+        if (plugin.getServer().isOwnedByCurrentRegion(player)) work.run();
+        else if (plugin.isEnabled()) player.getScheduler().run(plugin, scheduled -> {
+            synchronized (this) {
+                work.run();
+                tickSnapshots.clear();
+            }
+        }, null);
     }
 
     private void cancelScan(UUID id) {
@@ -754,7 +781,7 @@ public final class MovementListener implements Listener {
         executor.purge();
     }
 
-    public void cleanupPlayer(UUID id) {
+    public synchronized void cleanupPlayer(UUID id) {
         trackedEntities.remove(id);
         trackedEntities.values().forEach(targets -> targets.remove(id));
         pendingEntities.remove(id);
@@ -772,7 +799,7 @@ public final class MovementListener implements Listener {
         hiddenEntities.values().forEach(targets -> targets.remove(id));
     }
 
-    public void shutdown() {
+    public synchronized void shutdown() {
         task.cancel();
         running.values().forEach(ticket -> { if (ticket.future != null) ticket.future.cancel(true); });
         executor.shutdownNow();

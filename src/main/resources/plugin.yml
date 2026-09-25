@@ -1,7 +1,8 @@
 name: AntiBase
 version: '${version}'
 main: mikey.me.antiBase.AntiBase
-api-version: '1.21.11'
+api-version: '26.2'
+folia-supported: true
 depend: [packetevents]
 description: Hides underground bases and caves from x-ray and freecam.
 commands:

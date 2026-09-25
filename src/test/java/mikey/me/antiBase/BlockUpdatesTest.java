@@ -47,6 +47,7 @@ class BlockUpdatesTest {
         clients = new ClientViewTracker();
         clients.reset(id, worldId);
         when(plugin.getServer()).thenReturn(server);
+        when(server.isOwnedByCurrentRegion(any(Player.class))).thenReturn(true);
         when(plugin.clientViews()).thenReturn(clients);
         when(plugin.interactions()).thenReturn(new InteractionVisibility());
         when(plugin.diagnostics()).thenReturn(new ConsoleDebug());

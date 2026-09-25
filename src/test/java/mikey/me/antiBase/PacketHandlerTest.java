@@ -1,5 +1,10 @@
 package mikey.me.antiBase;
 
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.PacketEventsAPI;
+import com.github.retrooper.packetevents.manager.server.ServerManager;
+import com.github.retrooper.packetevents.settings.PacketEventsSettings;
+import com.github.retrooper.packetevents.util.LogManager;
 import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
 import com.github.retrooper.packetevents.protocol.world.chunk.Column;
 import com.github.retrooper.packetevents.protocol.world.chunk.TileEntity;
@@ -17,6 +22,8 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCh
 import com.github.retrooper.packetevents.util.Vector3i;
 import org.bukkit.entity.Player;
 import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
@@ -26,6 +33,21 @@ class PacketHandlerTest {
     private final ClientViewTracker clients = new ClientViewTracker();
     private final InteractionVisibility interactions = new InteractionVisibility();
     private final ConsoleDebug debug = new ConsoleDebug();
+
+    @BeforeAll
+    static void serverVersion() {
+        // newer packetevents needs the api set up to read chunk sections
+        PacketEventsAPI<?> api = mock(PacketEventsAPI.class);
+        ServerManager server = mock(ServerManager.class);
+        when(server.getVersion()).thenReturn(ServerVersion.V_26_2);
+        when(api.getServerManager()).thenReturn(server);
+        when(api.getSettings()).thenReturn(new PacketEventsSettings());
+        when(api.getLogManager()).thenReturn(mock(LogManager.class));
+        PacketEvents.setAPI(api);
+    }
+
+    @AfterAll
+    static void clearApi() { PacketEvents.setAPI(null); }
 
     private PacketHandler handler(AntiBase plugin, BaseObfuscator obfuscator) {
         when(plugin.clientViews()).thenReturn(clients);
